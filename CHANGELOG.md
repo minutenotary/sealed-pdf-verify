@@ -4,14 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
-### Fixed
-
-- PEM parsing runs in linear time. A file with many `BEGIN` lines and no
-  `END` used to take quadratic time.
-
-## [0.1.0] - 2026-11-04
+## [0.1.0] - 2026-11-05
 
 First release. Two independent review rounds ran before it and their findings
 are part of this version; nothing was published earlier, so there is no
@@ -79,6 +72,8 @@ previous behaviour to list as fixed.
   total; a refused entry makes the archive `incomplete`; each document is
   assembled under its own try/catch; paths, seal files and side files match
   case-insensitively.
+- PEM input (trusted keys, root files) is parsed in linear time: text with
+  many `BEGIN` lines and no `END` cannot make it quadratic.
 - CLI: proof-derived text is stripped of control, bidirectional and
   zero-width characters; `--json` escapes them as `\uXXXX`.
 - Browser page: `verifyUrl` becomes a link only when it is https; a
