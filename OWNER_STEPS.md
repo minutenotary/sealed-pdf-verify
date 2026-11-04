@@ -19,16 +19,25 @@ has. The code side is done; these are the buttons to press, in order.
 5. Settings → Actions → General → Workflow permissions: keep "Read repository
    contents" (the workflows request what they need).
 
-## 2. npm
+## 2. npm (trusted publishing, no token)
 
-1. Create the npm package name `sealed-pdf-verify` under your npm account
-   (first publish claims it; check it is still free: `npm view sealed-pdf-verify`).
-2. Create a **granular access token** with "Read and write" on packages,
-   scoped to this package (or "publish" automation token).
-3. Add it as the repository secret `NPM_TOKEN` (Settings → Secrets and
-   variables → Actions).
-4. `release.yml` publishes with `--provenance`; this requires the repository
-   to be public and the publish to run from GitHub Actions (it does).
+The package is published from `release.yml` over OIDC. There is no npm token
+on GitHub.
+
+1. The npm package `sealed-pdf-verify` is owned by the `minutenotary` npm
+   account. 0.1.0 was published on 2026-11-05 by `release.yml` with a
+   short-lived token, because npm only lets you add a trusted publisher to a
+   package that already exists. That token and the `NPM_TOKEN` secret are
+   deleted.
+2. npmjs.com → sealed-pdf-verify → Settings → Trusted publisher → GitHub
+   Actions: organization `minutenotary`, repository `sealed-pdf-verify`,
+   workflow `release.yml`, no environment, allow `npm publish`.
+3. Publishing access: "Require two-factor authentication and disallow bypass
+   2fa tokens". Trusted publishing keeps working with this setting.
+4. `release.yml` needs `id-token: write` and npm >= 11.5.1 (Node 24).
+   Provenance is attached automatically; the repository must stay public.
+5. If the workflow file is renamed, update the trusted publisher on npmjs.com
+   first, or the publish fails.
 
 ## 3. Read the Docs
 
@@ -36,20 +45,25 @@ has. The code side is done; these are the buttons to press, in order.
    repository. `.readthedocs.yaml` + `mkdocs.yml` are already in place.
 2. After the first build, copy the docs URL into the README.
 
-## 4. First release
+## 4. Releasing a version
+
+Bump `version` in `package.json`, move the CHANGELOG "Unreleased" notes under
+the new version, merge that through a PR, then tag the merge commit (repo
+admins only, ruleset `protect-release-tags`):
 
 ```bash
-git tag v0.1.0
-git push --tags
+git pull --ff-only
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 
-This runs `release.yml` (npm publish with provenance) and `docker.yml`
-(image to `ghcr.io/<owner>/sealed-pdf-verify:0.1.0`). After the first image,
-make the GHCR package public: GitHub profile → Packages → sealed-pdf-verify
-→ Package settings → Change visibility.
+This runs `release.yml` (npm publish over OIDC, with provenance) and
+`docker.yml` (image to `ghcr.io/minutenotary/sealed-pdf-verify:X.Y.Z`).
+`release.yml` fails if the tag does not match `package.json`.
 
-Later releases: bump `version` in `package.json`, move the CHANGELOG
-"Unreleased" notes under the new version, commit, tag `vX.Y.Z`, push tags.
+The GHCR package must be public once (after the first image): GitHub
+profile → Packages → sealed-pdf-verify → Package settings → Change
+visibility.
 
 ## 5. Official key fingerprint
 
