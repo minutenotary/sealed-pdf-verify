@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- PEM parsing runs in linear time. A file with many `BEGIN` lines and no
+  `END` used to take quadratic time.
+
 ## [0.1.0] - 2026-11-04
 
 First release. Two independent review rounds ran before it and their findings
