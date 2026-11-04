@@ -1,6 +1,6 @@
 {
   "name": "sealed-pdf-verify",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Offline, independent verifier for PDFs sealed by minutenotary.ca: SHA-256 digest, detached ECDSA P-256 signature, RFC 3161 timestamp and append-only ledger entry.",
   "keywords": [
     "pdf",
