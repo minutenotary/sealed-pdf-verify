@@ -18,7 +18,8 @@ timestamp), and that the seal sits in the issuer's public append-only ledger.
   for ECDSA, [PKI.js](https://pkijs.org) for the timestamp chain).
 - **CLI** (`npx sealed-pdf-verify`): one command, exit status 0/1/2.
 - **Browser page** (`web/`): drop a PDF and its proof, read the verdict; one
-  HTML file that works from `file://` and offline.
+  HTML file that works from `file://` and offline. Hosted copy:
+  <https://minutenotary.github.io/sealed-pdf-verify/>.
 
 Online check by the issuer: `https://minutenotary.ca/verify/<sealId>` (the
 seal id is printed on the document as `Code: <sealId>` and encoded in its
