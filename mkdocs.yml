@@ -1,0 +1,26 @@
+site_name: sealed-pdf-verify
+site_description: Offline, independent verifier for PDF documents sealed by minutenotary.ca
+site_url: https://sealed-pdf-verify.readthedocs.io/
+repo_url: https://github.com/OWNER/sealed-pdf-verify
+docs_dir: docs
+site_dir: docs/site
+theme:
+  name: readthedocs
+  highlightjs: true
+markdown_extensions:
+  - toc:
+      permalink: true
+  - tables
+  - fenced_code
+  - admonition
+nav:
+  - Overview: index.md
+  - Quick start: quick-start.md
+  - The five checks: checks.md
+  - Confirming the key: fingerprint.md
+  - Command line: cli.md
+  - Library API: api.md
+  - Evidence archives: evidence.md
+  - Specification: specification.md
+  - Threat model: threat-model.md
+  - FAQ: faq.md

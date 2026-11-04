@@ -1,0 +1,99 @@
+{
+  "name": "sealed-pdf-verify",
+  "version": "0.1.0",
+  "description": "Offline, independent verifier for PDFs sealed by minutenotary.ca: SHA-256 digest, detached ECDSA P-256 signature, RFC 3161 timestamp and append-only ledger entry.",
+  "keywords": [
+    "pdf",
+    "verify",
+    "verification",
+    "digital-signature",
+    "ecdsa",
+    "p-256",
+    "rfc3161",
+    "timestamp",
+    "hash-chain",
+    "offline"
+  ],
+  "homepage": "https://minutenotary.ca",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OWNER/sealed-pdf-verify.git"
+  },
+  "bugs": {
+    "url": "https://github.com/OWNER/sealed-pdf-verify/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "bin": {
+    "sealed-pdf-verify": "./dist/cli.js"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "trust",
+    "tsa-roots",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "npm run build:lib && npm run build:web",
+    "build:lib": "tsup",
+    "build:web": "vite build --config web/vite.config.ts",
+    "dev:web": "vite --config web/vite.config.ts",
+    "lint": "eslint . && prettier --check .",
+    "lint:fix": "eslint . --fix && prettier --write .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --coverage",
+    "test:watch": "vitest",
+    "check:brand": "node scripts/check-no-brand.mjs",
+    "check:roots": "node scripts/sync-tsa-roots.mjs --check",
+    "sync:roots": "node scripts/sync-tsa-roots.mjs",
+    "fixtures": "node scripts/make-fixtures.mjs",
+    "prepublishOnly": "npm run check:brand && npm run lint && npm run typecheck && npm test && npm run build:lib"
+  },
+  "dependencies": {
+    "@noble/curves": "2.4.0",
+    "@peculiar/asn1-cms": "3.0.0",
+    "@peculiar/asn1-ecc": "3.0.0",
+    "@peculiar/asn1-schema": "3.0.0",
+    "@peculiar/asn1-tsp": "3.0.0",
+    "@peculiar/asn1-x509": "3.0.0",
+    "asn1js": "4.0.0",
+    "fflate": "0.8.3",
+    "pkijs": "4.0.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.6.6",
+    "@vitest/coverage-v8": "5.1.0",
+    "eslint": "10.14.0",
+    "globals": "17.14.0",
+    "prettier": "3.9.10",
+    "tsup": "9.0.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.1",
+    "vite": "8.3.5",
+    "vite-plugin-singlefile": "2.3.4",
+    "vitest": "5.1.0"
+  }
+}

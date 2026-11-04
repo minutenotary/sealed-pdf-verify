@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "sealId": "SPV-TEST-000001",
+  "documentHash": "1d5d2a8b7f57f52531d0ab0f43e1d63307d4dddd566f15eb690f517f5d0bbd7b",
+  "algorithm": "OCI_ECDSA_P256_SHA256",
+  "signature": "MEQCICYuJgSyEj8XOnAEGyvz3UoQ8OI1UHmz0R986O3qhHdoAiAF76Ubd2aCNlKJxlw8AjSvX8aZ4zWJAIeF5i5yGKxgfw==",
+  "keyId": "test-key",
+  "keyVersion": "1",
+  "publicKeyPem": "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2eWz03jXYpDOfjoTeM617QsV+kyH\nIeXk95gb8g2dmh2qn8rKOX1FS6U+NKfrpc2cyiRmUvzNntFYv5cUUtU9fA==\n-----END PUBLIC KEY-----\n",
+  "tsaToken": null,
+  "tsaUrl": null,
+  "timestampedAt": null,
+  "verifyUrl": "https://example.com/verify/SPV-TEST-000001",
+  "sealedAt": "2026-11-04T12:00:00.000Z",
+  "ledger": {
+    "seq": 1,
+    "previousEntryHash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "entryHash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  }
+}

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta
+      name="description"
+      content="Checks a sealed PDF against its proof file entirely in your browser: hash, signature, key, timestamp and ledger. Nothing is uploaded."
+    />
+    <title>Sealed PDF Verifier</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <main class="page">
+      <header class="hero">
+        <h1>Sealed PDF Verifier</h1>
+        <p class="lead">
+          Checks a sealed PDF against the proof file delivered with it. Everything runs in this
+          browser tab: the PDF never leaves your device.
+        </p>
+      </header>
+
+      <section class="inputs" aria-labelledby="inputs-title">
+        <h2 id="inputs-title" class="visually-hidden">Files</h2>
+        <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Drop files here">
+          <p class="dropzone-title">Drop the PDF and its proof JSON here</p>
+          <p class="dropzone-hint">or an evidence ZIP, or use the pickers below</p>
+        </div>
+        <div class="pickers">
+          <label class="picker">
+            <span class="picker-label">Sealed PDF</span>
+            <input id="pdf-input" type="file" accept="application/pdf,.pdf" />
+          </label>
+          <label class="picker">
+            <span class="picker-label">Proof JSON</span>
+            <input id="proof-input" type="file" accept="application/json,.json" />
+          </label>
+          <label class="picker">
+            <span class="picker-label">Evidence ZIP</span>
+            <input id="zip-input" type="file" accept="application/zip,.zip" />
+          </label>
+        </div>
+        <details class="advanced">
+          <summary>Advanced: pin the signing key</summary>
+          <label class="field">
+            <span>Trusted key fingerprint(s), SHA-256 hex, one per line</span>
+            <textarea
+              id="fingerprints"
+              rows="2"
+              spellcheck="false"
+              placeholder="optional"
+            ></textarea>
+          </label>
+          <p class="help">
+            With a fingerprint supplied, a signature from any other key is reported as
+            <code>key: rejected</code>. Confirm the official fingerprint out of band.
+          </p>
+        </details>
+        <div class="actions">
+          <button id="verify-button" type="button" disabled>Verify</button>
+          <button id="clear-button" type="button" class="secondary">Clear</button>
+        </div>
+      </section>
+
+      <section id="result" class="result" aria-live="polite" hidden></section>
+
+      <footer class="footer">
+        <p>
+          Reference verifier for documents sealed by
+          <a href="https://minutenotary.ca">minutenotary.ca</a>.
+        </p>
+        <p class="small">
+          Open source (MIT). Works offline once loaded. Makes no network requests. Command-line tool
+          and specification: <code>npx sealed-pdf-verify</code>.
+        </p>
+      </footer>
+    </main>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

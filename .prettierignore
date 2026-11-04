@@ -1,0 +1,10 @@
+dist
+web/dist
+coverage
+node_modules
+test/fixtures
+package-lock.json
+docs/site
+*.pem
+*.tsr
+src/tsa-roots.generated.ts
