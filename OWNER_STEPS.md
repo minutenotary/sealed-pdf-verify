@@ -19,16 +19,30 @@ has. The code side is done; these are the buttons to press, in order.
 5. Settings → Actions → General → Workflow permissions: keep "Read repository
    contents" (the workflows request what they need).
 
-## 2. npm
+## 2. npm (trusted publishing, no token on GitHub)
 
-1. Create the npm package name `sealed-pdf-verify` under your npm account
-   (first publish claims it; check it is still free: `npm view sealed-pdf-verify`).
-2. Create a **granular access token** with "Read and write" on packages,
-   scoped to this package (or "publish" automation token).
-3. Add it as the repository secret `NPM_TOKEN` (Settings → Secrets and
-   variables → Actions).
-4. `release.yml` publishes with `--provenance`; this requires the repository
-   to be public and the publish to run from GitHub Actions (it does).
+npm can only attach a trusted publisher to a package that already exists, so
+the first version goes up by hand once; every later release is published by
+`release.yml` through OIDC with provenance, and no `NPM_TOKEN` secret exists.
+
+1. First publish, from this folder, logged in as the npm account that should
+   own the package (2FA prompts in the browser):
+
+   ```bash
+   npm login
+   npm publish --access public --provenance=false
+   ```
+
+   `prepublishOnly` runs the full `npm run check` first. `--provenance=false`
+   is needed only here: provenance can only be generated inside CI.
+
+2. npmjs.com → the package → Settings → **Trusted publishing** → GitHub
+   Actions: organization `minutenotary`, repository `sealed-pdf-verify`,
+   workflow `release.yml`, no environment, allow `npm publish`. The connection
+   must see its first successful publish within 2 days or it expires.
+3. Same settings page → Publishing access: **Require two-factor
+   authentication and disallow tokens** (trusted publishing still works).
+4. `npm logout` on the laptop.
 
 ## 3. Read the Docs
 
@@ -43,7 +57,8 @@ git tag v0.1.0
 git push --tags
 ```
 
-This runs `release.yml` (npm publish with provenance) and `docker.yml`
+Tag the commit you published by hand in step 2.1. This runs `release.yml`
+(which sees 0.1.0 already on npm and skips the publish) and `docker.yml`
 (image to `ghcr.io/<owner>/sealed-pdf-verify:0.1.0`). After the first image,
 make the GHCR package public: GitHub profile → Packages → sealed-pdf-verify
 → Package settings → Change visibility.

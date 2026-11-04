@@ -6,7 +6,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write # npm provenance
+  id-token: write # npm trusted publishing + provenance
 
 jobs:
   publish:
@@ -15,9 +15,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
-          cache: npm
+          # npm trusted publishing (OIDC) needs npm >= 11.5.1, which ships with Node 24.
+          node-version: 24
           registry-url: https://registry.npmjs.org
+          # No dependency cache in a release build (cache poisoning).
+          package-manager-cache: false
       - run: npm ci
       # The whole gate once; `--ignore-scripts` on publish keeps prepublishOnly
       # from running it a second time (a local `npm publish` still gets it).
@@ -27,6 +29,15 @@ jobs:
           TAG="${GITHUB_REF_NAME#v}"
           PKG="$(node -p "require('./package.json').version")"
           test "$TAG" = "$PKG" || { echo "tag v$TAG != package.json $PKG"; exit 1; }
-      - run: npm publish --provenance --access public --ignore-scripts
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # v0.1.0 was published by hand before trusted publishing could be set up
+      # (npm only lets you add a trusted publisher to a package that exists), so
+      # a tag for a version already on the registry is a no-op, not a failure.
+      - name: Skip if this version is already on npm
+        id: exists
+        run: |
+          V="$(node -p "require('./package.json').name + '@' + require('./package.json').version")"
+          if npm view "$V" version >/dev/null 2>&1; then echo "skip=true" >> "$GITHUB_OUTPUT"; echo "$V is already published"; fi
+      # Trusted publishing: npm exchanges this job's OIDC token for a one-time
+      # publish credential and adds provenance. No NPM_TOKEN secret exists.
+      - if: steps.exists.outputs.skip != 'true'
+        run: npm publish --access public --ignore-scripts
