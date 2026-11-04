@@ -4,6 +4,7 @@
 [![npm](https://img.shields.io/npm/v/sealed-pdf-verify)](https://www.npmjs.com/package/sealed-pdf-verify)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node ≥ 20](https://img.shields.io/badge/node-%E2%89%A5%2020-brightgreen)](package.json)
+[![Open in StackBlitz](https://developer.stackblitz.com/img/open_in_stackblitz_small.svg)](https://stackblitz.com/github/minutenotary/sealed-pdf-verify)
 
 Offline, independent verifier for PDF documents sealed by
 [minutenotary.ca](https://minutenotary.ca). It checks, without any network
