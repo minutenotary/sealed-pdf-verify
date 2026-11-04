@@ -8,6 +8,10 @@ updates:
       dev-tooling:
         dependency-type: development
     open-pull-requests-limit: 5
+    ignore:
+      # typescript-eslint 8 supports TypeScript < 6.1; lift this when it supports 7.
+      - dependency-name: typescript
+        versions: ['>=7.0.0']
   - package-ecosystem: github-actions
     directory: /
     schedule:
