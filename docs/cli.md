@@ -29,7 +29,7 @@ Run it without installing: `npx sealed-pdf-verify ...`. Install globally with
 every release:
 
 ```bash
-docker run --rm -v "$PWD:/data" ghcr.io/OWNER/sealed-pdf-verify document.pdf --proof document.proof.json
+docker run --rm -v "$PWD:/data" ghcr.io/minutenotary/sealed-pdf-verify document.pdf --proof document.proof.json
 ```
 
 The human output is a table of the five checks followed by the facts of the

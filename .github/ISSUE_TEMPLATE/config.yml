@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: 'Security: a check passes when it should fail'
-    url: https://github.com/OWNER/sealed-pdf-verify/security/advisories/new
+    url: https://github.com/minutenotary/sealed-pdf-verify/security/advisories/new
     about: Report privately; see SECURITY.md.

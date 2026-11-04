@@ -1,6 +1,6 @@
 # sealed-pdf-verify
 
-[![CI](https://github.com/OWNER/sealed-pdf-verify/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/sealed-pdf-verify/actions/workflows/ci.yml)
+[![CI](https://github.com/minutenotary/sealed-pdf-verify/actions/workflows/ci.yml/badge.svg)](https://github.com/minutenotary/sealed-pdf-verify/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/sealed-pdf-verify)](https://www.npmjs.com/package/sealed-pdf-verify)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node ≥ 20](https://img.shields.io/badge/node-%E2%89%A5%2020-brightgreen)](package.json)

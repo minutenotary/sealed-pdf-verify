@@ -17,10 +17,10 @@
   "homepage": "https://minutenotary.ca",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/OWNER/sealed-pdf-verify.git"
+    "url": "git+https://github.com/minutenotary/sealed-pdf-verify.git"
   },
   "bugs": {
-    "url": "https://github.com/OWNER/sealed-pdf-verify/issues"
+    "url": "https://github.com/minutenotary/sealed-pdf-verify/issues"
   },
   "license": "MIT",
   "type": "module",

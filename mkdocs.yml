@@ -1,7 +1,7 @@
 site_name: sealed-pdf-verify
 site_description: Offline, independent verifier for PDF documents sealed by minutenotary.ca
 site_url: https://sealed-pdf-verify.readthedocs.io/
-repo_url: https://github.com/OWNER/sealed-pdf-verify
+repo_url: https://github.com/minutenotary/sealed-pdf-verify
 docs_dir: docs
 site_dir: docs/site
 theme:
