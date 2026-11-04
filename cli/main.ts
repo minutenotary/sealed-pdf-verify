@@ -24,15 +24,44 @@ export const EXIT_ALTERED = 1;
 export const EXIT_INCOMPLETE = 2;
 
 /**
- * Removes every control character except TAB from a line before it reaches a
+ * Characters that can move the cursor, hide text or reorder it on a terminal:
+ * C0 and C1 controls (except TAB), DEL, the Unicode line separators, the
+ * soft hyphen, zero-width characters and the bidirectional embedding /
+ * override / isolate controls (a right-to-left override turns "ALTERED" into
+ * "DERETLA" on screen).
+ */
+const TERMINAL_UNSAFE =
+  // eslint-disable-next-line no-control-regex -- matching control characters is the point
+  /[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u00ad\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+
+/**
+ * Removes {@link TERMINAL_UNSAFE} characters from a line before it reaches a
  * terminal. Proof fields (seal id, key id, URLs) and archive paths are
  * attacker-controlled text; an escape sequence or a bare newline in one of
  * them could move the cursor and overwrite the verdict line a person reads.
- * `--json` output is untouched: JSON escapes these characters itself.
  */
 export function sanitizeForTerminal(line: string): string {
-  // eslint-disable-next-line no-control-regex -- stripping control characters is the point
-  return line.replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u2028\u2029]/g, '');
+  return line.replace(TERMINAL_UNSAFE, '');
+}
+
+/**
+ * The part of {@link TERMINAL_UNSAFE} that `JSON.stringify` leaves raw: it
+ * escapes U+0000–U+001F itself, but C1 controls, the soft hyphen, zero-width
+ * and bidi characters and U+2028/9 are legal inside a JSON string.
+ */
+const JSON_UNSAFE = /[\u007f-\u009f\u00ad\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+
+/**
+ * JSON for `--json`: the pretty-printed value with {@link JSON_UNSAFE}
+ * characters written as `\\uXXXX`, which is the same JSON value to any parser
+ * (the line feeds of the pretty-printing are structure, not string content,
+ * and stay).
+ */
+export function jsonForTerminal(value: unknown): string {
+  return JSON.stringify(value, null, 2).replace(
+    JSON_UNSAFE,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
 }
 
 const USAGE = `Usage:
@@ -253,7 +282,7 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
       if (args.proof !== undefined)
         throw new Error('an evidence archive carries its own seals and does not take --proof');
       const result = await verifyEvidenceZip(targetBytes, options);
-      if (args.json) io.out(JSON.stringify(result, null, 2));
+      if (args.json) io.out(jsonForTerminal(result));
       else for (const line of formatEvidence(result)) io.out(line);
       return exitCode(result.overall);
     }
@@ -266,7 +295,7 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
     const input: VerifyInput = { proof, options };
     if (targetBytes !== null) input.pdf = targetBytes;
     const verdict = await verifySealedPdf(input);
-    if (args.json) io.out(JSON.stringify(verdict, null, 2));
+    if (args.json) io.out(jsonForTerminal(verdict));
     else for (const line of formatVerdict(verdict)) io.out(line);
     return exitCode(verdict.overall);
   } catch (error) {

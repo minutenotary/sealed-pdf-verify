@@ -166,9 +166,13 @@ describe('verifySealedPdf — timestamp trust options', () => {
     expect(noRoots.reasons.timestamp).toContain('no trusted roots configured');
     expect(disabled.reasons.timestamp).toContain('trust check disabled');
   });
-  it('ignores supplied text without a CERTIFICATE block but keeps the built-ins', async () => {
-    const v = await verifySealedPdf({ pdf, proof, options: { tsaRootsPem: ['no pem here'] } });
-    expectChecks(v, { timestamp: 'trusted' });
+  it('refuses supplied text without a CERTIFICATE block (a wrong file, not a smaller trust set)', async () => {
+    await expect(
+      verifySealedPdf({ pdf, proof, options: { tsaRootsPem: ['no pem here'] } }),
+    ).rejects.toThrow('tsaRootsPem[0] contains no CERTIFICATE block');
+    await expect(prepareOptions({ tsaRootsPem: [testRoot, ''] })).rejects.toThrow(
+      'tsaRootsPem[1] contains no CERTIFICATE block',
+    );
   });
 });
 
@@ -190,7 +194,7 @@ describe('verifySealedPdf — option validation (caller errors throw, documents 
     const bogus = `-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n`;
     await expect(
       verifySealedPdf({ pdf, proof, options: { tsaRootsPem: [bogus] } }),
-    ).rejects.toThrow(/tsaRootsPem: root certificate 0/);
+    ).rejects.toThrow(/tsaRootsPem\[0\]: root certificate 0 does not parse/);
   });
   it('counts usable roots', async () => {
     const both = await prepareOptions({ tsaRootsPem: [testRoot] });

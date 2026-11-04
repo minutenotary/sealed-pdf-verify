@@ -19,17 +19,14 @@ jobs:
           cache: npm
           registry-url: https://registry.npmjs.org
       - run: npm ci
-      - run: npm run check:brand
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build:lib
-      - run: node scripts/smoke-dist.mjs
+      # The whole gate once; `--ignore-scripts` on publish keeps prepublishOnly
+      # from running it a second time (a local `npm publish` still gets it).
+      - run: npm run check
       - name: Check the tag matches package.json
         run: |
           TAG="${GITHUB_REF_NAME#v}"
           PKG="$(node -p "require('./package.json').version")"
           test "$TAG" = "$PKG" || { echo "tag v$TAG != package.json $PKG"; exit 1; }
-      - run: npm publish --provenance --access public
+      - run: npm publish --provenance --access public --ignore-scripts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

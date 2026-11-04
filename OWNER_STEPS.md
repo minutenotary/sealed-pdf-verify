@@ -7,8 +7,10 @@ has. The code side is done; these are the buttons to press, in order.
 
 1. Create the public repository `sealed-pdf-verify` (under your user or an
    organisation; the name must stay generic).
-2. Replace `OWNER` in `package.json` (`repository.url`, `bugs.url`) with the
-   actual GitHub owner, commit, push `main`.
+2. Replace every `OWNER` placeholder with the actual GitHub owner. They sit in
+   `package.json`, `README.md`, `Dockerfile`, `docs/cli.md`, `mkdocs.yml` and
+   `.github/ISSUE_TEMPLATE/config.yml`; `grep -rl OWNER --exclude-dir=node_modules --exclude-dir=dist .`
+   lists them. Commit, push `main`.
 3. Settings → Security → enable **Private vulnerability reporting**
    (SECURITY.md points people there).
 4. Settings → Pages → Source: **GitHub Actions** (the `pages.yml` workflow

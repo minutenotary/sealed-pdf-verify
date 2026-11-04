@@ -31,6 +31,25 @@ const pdf = fx('sample.pdf');
 const proof = fx('sample.proof.json');
 
 describe('cli', () => {
+  it('strips bidi overrides and zero-width characters, and escapes them in --json', async () => {
+    expect(sanitizeForTerminal('A\u202eLTERED\u200b\u00ad\u2066x\u2069')).toBe('ALTEREDx');
+    const dir = mkdtempSync(join(tmpdir(), 'spv-bidi-'));
+    const crafted = {
+      ...readProof('sample.proof.json'),
+      sealId: 'SEAL\u202e\u0085\u2028\u009b[2J-END',
+    };
+    const proofPath = join(dir, 'crafted.proof.json');
+    writeFileSync(proofPath, JSON.stringify(crafted));
+    const human = await run(pdf, '--proof', proofPath);
+    expect(human.out).not.toMatch(/[\u202e\u0085\u2028\u009b]/);
+    expect(human.out).toContain('SEAL[2J-END');
+    const json = await run(pdf, '--proof', proofPath, '--json');
+    expect(json.out).not.toMatch(/[\u202e\u0085\u2028\u009b]/);
+    expect(json.out).toContain('\\u202e');
+    expect(json.out).toContain('\\u009b');
+    const parsed = JSON.parse(json.out) as { facts: { sealId: string } };
+    expect(parsed.facts.sealId).toBe(crafted.sealId);
+  });
   it('prints usage with --help', async () => {
     const r = await run('--help');
     expect(r.code).toBe(EXIT_GENUINE);

@@ -101,22 +101,29 @@ export async function prepareOptions(options: VerifyOptions = {}): Promise<Prepa
     }
   }
 
-  const tsaRootsPem: string[] = [];
-  if (options.useBuiltInTsaRoots !== false) tsaRootsPem.push(...builtInTsaRootsPem());
-  const supplied = options.tsaRootsPem ?? [];
-  let suppliedCount: number;
-  try {
-    suppliedCount = parseRootCertificates(supplied).length;
-  } catch (error) {
-    throw new TypeError(`tsaRootsPem: ${messageOf(error)}`, { cause: error });
+  const builtIn = options.useBuiltInTsaRoots !== false ? builtInTsaRootsPem() : [];
+  const tsaRootsPem: string[] = [...builtIn];
+  let suppliedCount = 0;
+  for (const [index, pemText] of (options.tsaRootsPem ?? []).entries()) {
+    // Each supplied string is checked on its own: an unparsable block is a
+    // typo, and a string with no CERTIFICATE block at all is a wrong file
+    // (a private key, an empty file); both are operator errors, never a
+    // silently smaller trust set. The CLI applies the same rule to --tsa-roots.
+    let count: number;
+    try {
+      count = parseRootCertificates([pemText]).length;
+    } catch (error) {
+      throw new TypeError(`tsaRootsPem[${index}]: ${messageOf(error)}`, { cause: error });
+    }
+    if (count === 0) throw new TypeError(`tsaRootsPem[${index}] contains no CERTIFICATE block`);
+    suppliedCount += count;
+    tsaRootsPem.push(pemText);
   }
-  tsaRootsPem.push(...supplied);
-  const builtInCount = options.useBuiltInTsaRoots !== false ? builtInTsaRootsPem().length : 0;
 
   return {
     trustedFingerprints,
     tsaRootsPem,
-    tsaRootCount: builtInCount + suppliedCount,
+    tsaRootCount: builtIn.length + suppliedCount,
     checkTimestampTrust: options.checkTimestampTrust !== false,
   };
 }
@@ -225,7 +232,19 @@ export function decideOverall(checks: Checks): Overall {
  * `TypeError` (see {@link prepareOptions}).
  */
 export async function verifySealedPdf(input: VerifyInput): Promise<Verdict> {
-  const prepared = await prepareOptions(input.options);
+  return verifySealedPdfPrepared(input, await prepareOptions(input.options));
+}
+
+/**
+ * {@link verifySealedPdf} with options already validated, for callers that
+ * verify many documents under one configuration (evidence archives): the
+ * fingerprints and roots are prepared once, not once per document. `input.options`
+ * is ignored here; `prepared` is the configuration.
+ */
+export async function verifySealedPdfPrepared(
+  input: VerifyInput,
+  prepared: PreparedOptions,
+): Promise<Verdict> {
   let proof: ProofV1;
   try {
     proof = parseProof(input.proof);

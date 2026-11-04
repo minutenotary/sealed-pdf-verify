@@ -30,17 +30,20 @@
 
 ## Attacks considered
 
-| Attack                                 | Defence                                                                            |
-| -------------------------------------- | ---------------------------------------------------------------------------------- |
-| Modified PDF with the original proof   | hash mismatch, signature invalid, timestamp invalid                                |
-| Forged proof with a new key            | key rejected when pinned; `unpinned` is reported honestly when not                 |
-| Replayed proof on a different PDF      | hash mismatch                                                                      |
-| Back-dated timestamp                   | the token is signed by a TSA; forging it needs the TSA's key                       |
-| Timestamp from a rogue TSA             | chain must reach a shipped or user-supplied root; otherwise `invalid`              |
-| Malformed DER to confuse the parser    | strict DER (minimal lengths/integers, no trailing bytes), fail closed              |
-| Timing side channels on digest compare | constant-time comparison                                                           |
-| Tool phoning home                      | no network code; browser page is one file with no external requests                |
-| Supply chain of roots                  | roots downloaded from the CAs' own sites, committed, their SHA-256 pinned in tests |
-| Crafted proof text aimed at the reader | CLI strips control characters; the page links `verifyUrl` only when it is https    |
-| Decompression bomb in an evidence ZIP  | only the paths the verifier reads are inflated, each capped at 256 MiB             |
-| Operator misconfiguration              | bad fingerprints / roots throw; they are never reported as "altered"               |
+| Attack                                 | Defence                                                                                             |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Modified PDF with the original proof   | hash mismatch, signature invalid, timestamp invalid                                                 |
+| Forged proof with a new key            | key rejected when pinned; `unpinned` is reported honestly when not                                  |
+| Replayed proof on a different PDF      | hash mismatch                                                                                       |
+| Back-dated timestamp                   | the token is signed by a TSA; forging it needs the TSA's key                                        |
+| Timestamp from a rogue TSA             | chain must reach a shipped or user-supplied root; otherwise `invalid`                               |
+| Malformed DER to confuse the parser    | strict DER (minimal lengths/integers, no trailing bytes), fail closed                               |
+| Timing side channels on digest compare | constant-time comparison                                                                            |
+| Tool phoning home                      | no network code; browser page is one file with no external requests                                 |
+| Supply chain of roots                  | roots downloaded from the CAs' own sites, committed, their SHA-256 pinned in tests                  |
+| Crafted proof text aimed at the reader | CLI strips control characters; the page links `verifyUrl` only when it is https                     |
+| Decompression bomb in an evidence ZIP  | only the paths the verifier reads are inflated: 256 MiB per entry, 1 GiB and 1 000 entries in total |
+| Operator misconfiguration              | bad fingerprints / roots throw; they are never reported as "altered"                                |
+| Weak hash on the token's own signature | CMS digest must be SHA-2 and the signature RSA or ECDSA; SHA-1 is refused outright                  |
+| Evidence trimmed to hide a chain entry | a document the segment does not mention makes the archive `incomplete`                              |
+| Stale verdict painted in the page      | a run that finishes after a newer one started is discarded                                          |

@@ -55,11 +55,21 @@ export async function verifyLedgerEntry(
   documentHash: string,
   sealedAt: string,
 ): Promise<LedgerEntryResult> {
-  if (block.previousEntryHash.toLowerCase() === GENESIS_PREVIOUS_HASH && block.seq > 1) {
+  const previous = block.previousEntryHash.toLowerCase();
+  if (previous === GENESIS_PREVIOUS_HASH && !claimsGenesis(block.seq, previous)) {
     return {
       ok: false,
       expectedEntryHash: null,
       reason: `entry #${block.seq} links to the genesis value; only the first entry may`,
+    };
+  }
+  // The converse: seq 0 can only ever be the first entry, so it must link to
+  // the genesis value. (seq 1 may be either: see claimsGenesis.)
+  if (block.seq === 0 && previous !== GENESIS_PREVIOUS_HASH) {
+    return {
+      ok: false,
+      expectedEntryHash: null,
+      reason: 'entry #0 is the genesis entry and must link to 64 zeros',
     };
   }
   let expected: string;
@@ -100,6 +110,8 @@ export interface LedgerSegmentResult {
 /**
  * Checks an evidence ZIP `ledger/segment.json`: every entry's hash recomputes,
  * seq increases by one, and each `previousEntryHash` equals the prior `entryHash`.
+ * A segment may start anywhere in the chain; only its first entry's link is
+ * taken on trust (the issuer's online check covers the rest of the chain).
  */
 export async function verifyLedgerSegment(entries: LedgerEntry[]): Promise<LedgerSegmentResult> {
   if (entries.length === 0)
@@ -132,24 +144,9 @@ export async function verifyLedgerSegment(entries: LedgerEntry[]): Promise<Ledge
           reason: `entry #${entry.seq} does not link to entry #${previous.seq}`,
         };
       }
-    } else if (entry.seq === 0 && entry.previousEntryHash.toLowerCase() !== GENESIS_PREVIOUS_HASH) {
-      return {
-        ok: false,
-        count: entries.length,
-        ...range,
-        reason: 'genesis entry must link to 64 zeros',
-      };
-    } else if (
-      entry.previousEntryHash.toLowerCase() === GENESIS_PREVIOUS_HASH &&
-      !claimsGenesis(entry.seq, entry.previousEntryHash)
-    ) {
-      return {
-        ok: false,
-        count: entries.length,
-        ...range,
-        reason: `entry #${entry.seq} links to the genesis value; only the first entry may`,
-      };
     }
+    // The genesis rules (a zero link only at seq 0 or 1, seq 0 only with a
+    // zero link) are enforced by verifyLedgerEntry above for every entry.
     previous = entry;
   }
   return { ok: true, count: entries.length, ...range };

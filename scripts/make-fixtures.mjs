@@ -6,7 +6,8 @@
 //     label, wrong key, no timestamp, no ledger, bad ledger, synthetic TSA,
 //     real FreeTSA, real DigiCert
 //   - a synthetic RFC 3161 TSA (root + leaf with timeStamping EKU) and tokens,
-//     including malformed variants the verifier must reject
+//     including malformed variants the verifier must reject, a self-signed
+//     timestamp unit, a cross-signed intermediate and a SHA-1 CMS signature
 //   - TWO real tokens, from https://freetsa.org/tsr and
 //     http://timestamp.digicert.com (only a 32-byte hash is sent to each)
 //   - trust lists, a ledger segment and an evidence ZIP
@@ -25,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 import * as asn1js from 'asn1js';
 import * as pkijs from 'pkijs';
 import { AsnConvert, OctetString } from '@peculiar/asn1-schema';
+import { ContentInfo, SignedData } from '@peculiar/asn1-cms';
 import { AlgorithmIdentifier } from '@peculiar/asn1-x509';
 import { MessageImprint, TimeStampReq, TimeStampResp } from '@peculiar/asn1-tsp';
 import { zipSync } from 'fflate';
@@ -39,6 +41,7 @@ const ID_CT_TSTINFO = '1.2.840.113549.1.9.16.1.4';
 const ID_SIGNED_DATA = '1.2.840.113549.1.7.2';
 const ID_DATA = '1.2.840.113549.1.7.1';
 const EKU_TIMESTAMPING = '1.3.6.1.5.5.7.3.8';
+const EKU_CLIENT_AUTH = '1.3.6.1.5.5.7.3.2';
 const P256_N = BigInt('0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551');
 
 const write = (name, data) => {
@@ -172,6 +175,10 @@ async function makeCert({
   keys,
   ca,
   eku,
+  ekuCritical = true,
+  // keyUsage bits: CA → keyCertSign|cRLSign (0x06), leaf → digitalSignature
+  // (0x80); a self-signed timestamp unit needs both (0x86).
+  keyUsage = ca ? 0x06 : 0x80,
   notBefore,
   notAfter,
 }) {
@@ -195,14 +202,16 @@ async function makeCert({
       extnValue: new pkijs.BasicConstraints({ cA: ca }).toSchema().toBER(false),
     }),
   );
-  // keyUsage: CA → keyCertSign|cRLSign (0x06, 1 unused bit); leaf → digitalSignature (0x80, 7 unused)
+  // Unused bits: count the trailing zero bits of the single keyUsage byte.
+  let unusedBits = 0;
+  while (unusedBits < 8 && ((keyUsage >> unusedBits) & 1) === 0) unusedBits += 1;
   cert.extensions.push(
     new pkijs.Extension({
       extnID: '2.5.29.15',
       critical: true,
       extnValue: new asn1js.BitString({
-        valueHex: new Uint8Array([ca ? 0x06 : 0x80]).buffer,
-        unusedBits: ca ? 1 : 7,
+        valueHex: new Uint8Array([keyUsage]).buffer,
+        unusedBits,
       }).toBER(false),
     }),
   );
@@ -210,7 +219,7 @@ async function makeCert({
     cert.extensions.push(
       new pkijs.Extension({
         extnID: '2.5.29.37',
-        critical: true,
+        critical: ekuCritical,
         extnValue: new pkijs.ExtKeyUsage({ keyPurposes: eku }).toSchema().toBER(false),
       }),
     );
@@ -264,6 +273,46 @@ const noEkuCert = await makeCert({
   notBefore: T0,
   notAfter: T1,
 });
+// EKU variants the verifier must reject (RFC 3161 §2.3: critical, sole purpose).
+const noncriticalEkuKeys = await ecKeys();
+const noncriticalEkuCert = await makeCert({
+  serial: 4,
+  subjectCn: 'Test Unit With Non-Critical EKU',
+  issuer: rootCert,
+  issuerKey: rootKeys.privateKey,
+  keys: noncriticalEkuKeys,
+  ca: false,
+  eku: [EKU_TIMESTAMPING],
+  ekuCritical: false,
+  notBefore: T0,
+  notAfter: T1,
+});
+const multiEkuKeys = await ecKeys();
+const multiEkuCert = await makeCert({
+  serial: 5,
+  subjectCn: 'Test Unit With Two Purposes',
+  issuer: rootCert,
+  issuerKey: rootKeys.privateKey,
+  keys: multiEkuKeys,
+  ca: false,
+  eku: [EKU_TIMESTAMPING, EKU_CLIENT_AUTH],
+  notBefore: T0,
+  notAfter: T1,
+});
+// A private TSA whose single self-signed certificate is both signer and trust
+// anchor (openssl `req -x509` + `ts` does this: CA:TRUE, signs tokens itself);
+// the verifier must accept it when that certificate is supplied as a root.
+const selfSignedTsuKeys = await ecKeys();
+const selfSignedTsuCert = await makeCert({
+  serial: 6,
+  subjectCn: 'Test Self-Signed Timestamp Unit',
+  keys: selfSignedTsuKeys,
+  ca: true,
+  keyUsage: 0x86,
+  eku: [EKU_TIMESTAMPING],
+  notBefore: T0,
+  notAfter: T1,
+});
 const strangerRootKeys = await ecKeys();
 const strangerRoot = await makeCert({
   serial: 1,
@@ -286,6 +335,43 @@ const strangerCert = await makeCert({
   notAfter: T1,
 });
 
+// A CA in transition: the same intermediate key certified twice, once by the
+// test root and once by the unrelated root. A token that embeds both copies
+// must still chain to whichever root the verifier trusts.
+const interKeys = await ecKeys();
+const interByTestRoot = await makeCert({
+  serial: 10,
+  subjectCn: 'Test Intermediate CA',
+  issuer: rootCert,
+  issuerKey: rootKeys.privateKey,
+  keys: interKeys,
+  ca: true,
+  notBefore: T0,
+  notAfter: T1,
+});
+const interByUnrelatedRoot = await makeCert({
+  serial: 11,
+  subjectCn: 'Test Intermediate CA',
+  issuer: strangerRoot,
+  issuerKey: strangerRootKeys.privateKey,
+  keys: interKeys,
+  ca: true,
+  notBefore: T0,
+  notAfter: T1,
+});
+const crossLeafKeys = await ecKeys();
+const crossLeafCert = await makeCert({
+  serial: 12,
+  subjectCn: 'Test Timestamp Unit Under Cross-Signed CA',
+  issuer: interByTestRoot,
+  issuerKey: interKeys.privateKey,
+  keys: crossLeafKeys,
+  ca: false,
+  eku: [EKU_TIMESTAMPING],
+  notBefore: T0,
+  notAfter: T1,
+});
+
 async function makeToken({
   digest,
   hashOid = SHA256_OID,
@@ -293,6 +379,9 @@ async function makeToken({
   keys,
   genTime = GEN_TIME,
   serial = 1001,
+  // Hash used for the CMS messageDigest attribute and the signature itself
+  // ('SHA-1' makes the variant the verifier must refuse).
+  cmsHash = 'SHA-256',
   // Variants the verifier must reject (all default to the well-formed token):
   contentTypeAttr = 'tstinfo', // 'tstinfo' | 'data' | 'none'
   eContentType = ID_CT_TSTINFO,
@@ -361,7 +450,11 @@ async function makeToken({
     new pkijs.Attribute({
       type: '1.2.840.113549.1.9.4',
       values: [
-        new asn1js.OctetString({ valueHex: new Uint8Array(sha256(Buffer.from(tstDer))).buffer }),
+        new asn1js.OctetString({
+          valueHex: new Uint8Array(
+            createHash(cmsHash.toLowerCase().replace('-', '')).update(Buffer.from(tstDer)).digest(),
+          ).buffer,
+        }),
       ],
     }),
   );
@@ -369,7 +462,7 @@ async function makeToken({
     type: 0,
     attributes,
   });
-  await signed.sign(keys.privateKey, 0, 'SHA-256');
+  await signed.sign(keys.privateKey, 0, cmsHash);
   const ci = new pkijs.ContentInfo({ contentType: ID_SIGNED_DATA, content: signed.toSchema(true) });
   return Buffer.from(ci.toSchema().toBER(false));
 }
@@ -412,6 +505,49 @@ const syntheticUntrustedWithRootTsr = await makeToken({
   serial: 1015,
   extraCerts: [strangerRoot],
 });
+const syntheticEkuNoncriticalTsr = await makeToken({
+  digest: sampleDigest,
+  cert: noncriticalEkuCert,
+  keys: noncriticalEkuKeys,
+  serial: 1016,
+});
+const syntheticEkuMultiTsr = await makeToken({
+  digest: sampleDigest,
+  cert: multiEkuCert,
+  keys: multiEkuKeys,
+  serial: 1017,
+});
+const syntheticSelfSignedTsuTsr = await makeToken({
+  digest: sampleDigest,
+  cert: selfSignedTsuCert,
+  keys: selfSignedTsuKeys,
+  serial: 1018,
+});
+const syntheticCrossSignedTsr = await makeToken({
+  digest: sampleDigest,
+  cert: crossLeafCert,
+  keys: crossLeafKeys,
+  serial: 1019,
+  extraCerts: [interByTestRoot, interByUnrelatedRoot],
+});
+// The CMS signature (not the imprint) made with SHA-1: a chosen-prefix
+// collision on the attacker-controlled nonce could let one TSA signature
+// cover two TSTInfos, so the verifier refuses the digest algorithm outright.
+const syntheticSha1CmsTsr = await makeToken({
+  digest: sampleDigest,
+  cert: leafCert,
+  keys: leafKeys,
+  serial: 1020,
+  cmsHash: 'SHA-1',
+});
+// Two SignerInfos (the same one twice): RFC 3161 §2.4.2 allows exactly one.
+const syntheticTwoSignersTsr = (() => {
+  const ci = AsnConvert.parse(syntheticTsr, ContentInfo);
+  const sd = AsnConvert.parse(ci.content, SignedData);
+  sd.signerInfos.push(sd.signerInfos[0]);
+  ci.content = AsnConvert.serialize(sd);
+  return Buffer.from(AsnConvert.serialize(ci));
+})();
 
 // ---------------------------------------------------------------- real tokens
 async function fetchTsa(url, digest) {
@@ -506,6 +642,13 @@ write('synthetic-wrong-content-type.tsr', syntheticWrongContentTypeTsr);
 write('synthetic-constructed.tsr', syntheticConstructedTsr);
 write('synthetic-id-data.tsr', syntheticIdDataTsr);
 write('synthetic-untrusted-with-root.tsr', syntheticUntrustedWithRootTsr);
+write('synthetic-eku-noncritical.tsr', syntheticEkuNoncriticalTsr);
+write('synthetic-eku-multi.tsr', syntheticEkuMultiTsr);
+write('synthetic-selfsigned-tsu.tsr', syntheticSelfSignedTsuTsr);
+write('tsa-selfsigned-tsu.pem', pem(certDer(selfSignedTsuCert), 'CERTIFICATE'));
+write('synthetic-cross-signed.tsr', syntheticCrossSignedTsr);
+write('synthetic-sha1-cms.tsr', syntheticSha1CmsTsr);
+write('synthetic-two-signers.tsr', syntheticTwoSignersTsr);
 if (realTsr) write('real-freetsa.tsr', realTsr);
 if (digicertTsr) write('real-digicert.tsr', digicertTsr);
 

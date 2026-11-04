@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { EvidenceResult, Verdict } from '../src/index.js';
 import {
   formatBytes,
@@ -121,6 +121,38 @@ describe('renderVerdict', () => {
     expect(node.classList.contains('verdict-compact')).toBe(true);
     expect(node.querySelector('.verdict-meaning')).toBeNull();
     expect(node.querySelector('.verdict-label')?.textContent).toBe('Document');
+  });
+});
+
+describe('copy controls', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    Reflect.deleteProperty(navigator, 'clipboard');
+  });
+  it('renders no Copy control without the Clipboard API', () => {
+    expect(renderVerdict(verdict()).querySelector('button')).toBeNull();
+  });
+  it('copies the digest and the fingerprint, reports success, then resets', async () => {
+    vi.useFakeTimers();
+    const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    const node = renderVerdict(verdict());
+    const buttons = Array.from(node.querySelectorAll<HTMLButtonElement>('button'));
+    expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual([
+      'Copy the document hash',
+      'Copy the key fingerprint',
+    ]);
+    buttons[0]?.click();
+    await Promise.resolve();
+    expect(writeText).toHaveBeenCalledWith('ab'.repeat(32));
+    expect(buttons[0]?.textContent).toBe('Copied');
+    vi.advanceTimersByTime(1500);
+    expect(buttons[0]?.textContent).toBe('Copy');
+    writeText.mockRejectedValueOnce(new Error('denied'));
+    buttons[1]?.click();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(buttons[1]?.textContent).toBe('Copy failed');
   });
 });
 

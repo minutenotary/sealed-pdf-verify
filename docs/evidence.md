@@ -20,18 +20,22 @@ audit/booking-audit-log.json    issuer-side log, ignored by the verifier
    archives carry the public key and the token inside the seal JSON; older
    ones kept them next to it as `.public-key.pem` and `.tsr`, which are read
    only when the JSON omits those fields,
-3. takes the ledger block from the matching `segment.json` entry,
+3. takes the ledger block from the `segment.json` entry with the same digest
+   and the same `sealedAt` (a document sealed twice has two entries); a
+   `ledger` block inside the seal JSON is ignored,
 4. runs the five checks on each document,
 5. walks the whole segment: every entry recomputes, each `previousEntryHash`
    equals the prior `entryHash`, `seq` increases by one.
 
 The archive verdict is `altered` if any document is altered or the segment is
-broken, `incomplete` if a PDF has no matching seal, could not be assembled
-(for example a key file that is not UTF-8) or an entry was too large to
-inflate, otherwise `genuine`. A seal that matches no document is noted.
+broken, `incomplete` if a PDF has no matching seal, is not mentioned by the
+segment, could not be assembled (for example a key file that is not UTF-8)
+or an entry was refused by the inflation limits, otherwise `genuine`. A seal
+that matches no document is noted.
 
 Only `README.txt`, `seals/`, `ledger/segment.json` and `documents/` are
-inflated, each up to 256 MiB; everything else in the archive stays compressed
-and is never read. Paths are matched case-insensitively.
+inflated, 256 MiB per entry, 1 GiB and 1 000 entries in total; everything
+else in the archive stays compressed and is never read. Paths, seal files
+and their side files are matched case-insensitively.
 Seals marked `superseded` are verified like any other and flagged in the
 notes with the stated reason. A top-level folder inside the ZIP is tolerated.

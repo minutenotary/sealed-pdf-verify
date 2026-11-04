@@ -61,9 +61,10 @@ interface Verdict {
 It never throws for document input: an unreadable proof gives `overall:
 'incomplete'` with `error` set and `facts: null`. Invalid `options` throw
 `TypeError` before any check runs: a fingerprint that is not 64 hex
-characters, a `trustedPublicKeys` entry that does not parse, or a
-`tsaRootsPem` certificate that does not parse. `prepareOptions(options)` runs
-the same validation on its own.
+characters, a `trustedPublicKeys` entry that does not parse, a `tsaRootsPem`
+certificate that does not parse, or a `tsaRootsPem` entry with no CERTIFICATE
+block at all (a wrong file, not a smaller trust set). `prepareOptions(options)`
+is exported and runs the same validation on its own.
 
 Timestamp semantics: `invalid` means a chain was evaluated and failed (or the
 imprint does not match). When no trust evaluation is possible (`
@@ -74,7 +75,10 @@ false` is set) the check is `imprint_only` and the reason says why.
 
 Takes the archive bytes, returns `{ overall, documents, sealCount,
 ledgerSegment, readme, notes }` where each document has `{ path,
-computedHash, sealId, verdict, overall, disposition, reason? }`.
+computedHash, sealId, verdict, overall, disposition, reason? }`. Options are
+validated once for the whole archive. Inflation limits (`MAX_ENTRY_BYTES`,
+`MAX_INFLATED_BYTES`, `MAX_INFLATED_ENTRIES`) are exported; an entry refused
+by any of them is noted and makes the archive `incomplete`.
 
 ## Helpers
 

@@ -72,10 +72,15 @@ Required check ("imprint"): `TSTInfo.messageImprint.hashAlgorithm.algorithm`
 (constant-time). Extract `genTime` (GeneralizedTime) as the trusted time. No
 token → `timestamp: none`.
 
-Optional check ("trust", on by default when roots are available): verify the
-CMS `SignerInfo` signature over the signed attributes (the `messageDigest`
-attribute must equal the digest of `eContent` under the signer's
-`digestAlgorithm`; the `content-type` attribute must name id-ct-TSTInfo);
+Optional check ("trust", on by default when roots are available): the token
+must carry exactly one `SignerInfo` (RFC 3161 §2.4.2) whose `digestAlgorithm`
+is id-sha256, id-sha384 or id-sha512 and whose `signatureAlgorithm` is an RSA
+(PKCS#1 v1.5, RSASSA-PSS or bare rsaEncryption) or ECDSA (SHA-2 or bare
+id-ecPublicKey) identifier; any other algorithm, SHA-1 included, is refused
+before the signature is examined. Then verify the CMS `SignerInfo` signature
+over the signed attributes (the `messageDigest` attribute must equal the
+digest of `eContent` under that `digestAlgorithm`; the `content-type`
+attribute must name id-ct-TSTInfo);
 locate the signer certificate in `SignedData.certificates` by `sid`
 (issuerAndSerialNumber or subjectKeyIdentifier); require the extended key
 usage extension to be critical and to contain only id-kp-timeStamping
@@ -100,7 +105,7 @@ UTF-8, `\n` = LF (0x0A), `seq` as a decimal integer, hashes lowercase hex,
 integer (below 2^53) printed in decimal. The first entry of a chain has
 `previousEntryHash` = 64 zeros; whether it is numbered 0 or 1 is the issuer's
 choice, so a verifier accepts the zero link at seq 0 and 1 and rejects it from
-seq 2 on.
+seq 2 on; conversely an entry numbered 0 must carry the zero link.
 
 Required check: recompute from `ledger.seq`, `documentHash`,
 `ledger.previousEntryHash`, `sealedAt` and compare with `ledger.entryHash` →
@@ -125,7 +130,14 @@ audit/booking-audit-log.json    ignore
 ```
 
 For each PDF under `documents/`, find the seal whose `documentHash` equals the
-PDF's SHA-256 and verify it. Tolerate missing optional files.
+PDF's SHA-256 and verify it; take its ledger block from the `segment.json`
+entry with the same digest and the same `sealedAt` (a document sealed twice
+has two entries), never from a `ledger` block inside the seal file. A document
+the segment does not mention keeps its own checks but makes the archive
+`incomplete`. Tolerate missing optional files. Inflate only `README.txt`,
+`seals/`, `ledger/segment.json` and `documents/`, within 256 MiB per entry,
+1 GiB and 1 000 entries in total; a refused entry makes the archive
+`incomplete`.
 
 ## Verdict
 

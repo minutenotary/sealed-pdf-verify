@@ -4,16 +4,39 @@ import { bytesToBase64, bytesToUtf8, constantTimeEqualHex } from './bytes.js';
 import { sha256Hex } from './hash.js';
 import { verifyLedgerSegment, type LedgerSegmentResult } from './ledger.js';
 import { messageOf } from './signature.js';
-import { prepareOptions, verifySealedPdf } from './verify.js';
+import { prepareOptions, verifySealedPdfPrepared } from './verify.js';
 import type { LedgerEntry, Overall, Verdict, VerifyOptions } from './types.js';
 
 /**
- * Largest single ZIP entry that is inflated (256 MiB). An archive is a few
- * PDFs and some JSON; anything larger is either a mistake or a decompression
- * bomb, and inflating it would exhaust the tab or process before any check
- * could fail closed.
+ * Inflation limits for an evidence archive. An archive is a few PDFs and some
+ * JSON; a decompression bomb hides behind a small compressed size, and a
+ * per-entry cap alone is not enough: a thousand entries each just under the
+ * cap would still be inflated and held in memory at once, in a browser tab as
+ * well as in Node. So three limits apply, all judged on the sizes the central
+ * directory declares before anything is inflated:
+ *   - {@link MAX_ENTRY_BYTES}: one entry (256 MiB);
+ *   - {@link MAX_INFLATED_BYTES}: the sum of every entry inflated (1 GiB);
+ *   - {@link MAX_INFLATED_ENTRIES}: how many entries are inflated (1 000).
+ * An entry refused by any of them is noted and makes the archive `incomplete`.
+ * (fflate allocates exactly the declared size and never grows it, so a
+ * central directory that under-declares an entry yields a truncated entry,
+ * which then fails to match any seal: that case fails closed on its own.)
  */
 export const MAX_ENTRY_BYTES = 256 * 1024 * 1024;
+export const MAX_INFLATED_BYTES = 1024 * 1024 * 1024;
+export const MAX_INFLATED_ENTRIES = 1000;
+
+export interface InflationLimits {
+  entryBytes: number;
+  totalBytes: number;
+  entries: number;
+}
+
+export const DEFAULT_INFLATION_LIMITS: Readonly<InflationLimits> = {
+  entryBytes: MAX_ENTRY_BYTES,
+  totalBytes: MAX_INFLATED_BYTES,
+  entries: MAX_INFLATED_ENTRIES,
+};
 
 export type EntryDisposition = 'inflate' | 'skip' | 'too-large';
 
@@ -24,12 +47,68 @@ export type EntryDisposition = 'inflate' | 'skip' | 'too-large';
  * compressed and never touches memory. Matching is case-insensitive because
  * archives pass through tools that change case.
  */
-export function classifyEntry(name: string, originalSize: number): EntryDisposition {
+export function classifyEntry(
+  name: string,
+  originalSize: number,
+  entryBytes = MAX_ENTRY_BYTES,
+): EntryDisposition {
   const wanted = /(^|\/)(README\.txt|seals\/[^/]+|ledger\/segment\.json|documents\/[^/]+)$/i.test(
     name,
   );
   if (!wanted) return 'skip';
-  return originalSize > MAX_ENTRY_BYTES ? 'too-large' : 'inflate';
+  return originalSize > entryBytes ? 'too-large' : 'inflate';
+}
+
+export interface RefusedEntry {
+  name: string;
+  reason: string;
+}
+
+export interface InflationPlan {
+  /** Decides one entry, in archive order; keeps the running totals. */
+  accept(name: string, originalSize: number): boolean;
+  /** Wanted entries that were refused, with why, in archive order. */
+  readonly refused: RefusedEntry[];
+}
+
+/** The stateful filter behind {@link verifyEvidenceZip}; limits are a parameter so the budget rule can be tested without a gigabyte of input. */
+export function createInflationPlan(
+  limits: Readonly<InflationLimits> = DEFAULT_INFLATION_LIMITS,
+): InflationPlan {
+  const refused: RefusedEntry[] = [];
+  let inflatedBytes = 0;
+  let inflatedEntries = 0;
+  return {
+    refused,
+    accept(name, originalSize) {
+      const disposition = classifyEntry(name, originalSize, limits.entryBytes);
+      if (disposition === 'skip') return false;
+      if (disposition === 'too-large') {
+        refused.push({
+          name,
+          reason: `entry larger than ${limits.entryBytes} bytes was not inflated`,
+        });
+        return false;
+      }
+      if (inflatedEntries >= limits.entries) {
+        refused.push({
+          name,
+          reason: `not inflated: the archive already has ${limits.entries} inflated entries`,
+        });
+        return false;
+      }
+      if (inflatedBytes + originalSize > limits.totalBytes) {
+        refused.push({
+          name,
+          reason: `not inflated: inflating it would exceed the ${limits.totalBytes}-byte archive budget`,
+        });
+        return false;
+      }
+      inflatedBytes += originalSize;
+      inflatedEntries += 1;
+      return true;
+    },
+  };
 }
 
 const hex64 = z.string().regex(/^[0-9a-fA-F]{64}$/);
@@ -37,6 +116,7 @@ const hex64 = z.string().regex(/^[0-9a-fA-F]{64}$/);
 const sealFileSchema = z.looseObject({
   sealId: z.string().min(1),
   documentHash: hex64,
+  sealedAt: z.string().optional(),
   publicKeyPem: z.string().optional(),
   tsaToken: z.string().nullable().optional(),
   disposition: z.string().nullable().optional(),
@@ -91,6 +171,15 @@ function entriesMatching(files: Record<string, Uint8Array>, re: RegExp): [string
     .sort(([a], [b]) => a.localeCompare(b));
 }
 
+/** Exact path first, then a case-insensitive match: side files follow the same case rule as seal files. */
+function sideFile(files: Record<string, Uint8Array>, path: string): Uint8Array | undefined {
+  const exact = files[path];
+  if (exact) return exact;
+  const lower = path.toLowerCase();
+  const key = Object.keys(files).find((candidate) => candidate.toLowerCase() === lower);
+  return key === undefined ? undefined : files[key];
+}
+
 function readJson(bytes: Uint8Array): unknown {
   return JSON.parse(bytesToUtf8(bytes)) as unknown;
 }
@@ -112,18 +201,16 @@ export async function verifyEvidenceZip(
   options: VerifyOptions = {},
 ): Promise<EvidenceResult> {
   // Fail fast on caller mistakes before any document is touched; the
-  // per-document try/catch below must only ever see document problems.
-  await prepareOptions(options);
+  // per-document try/catch below must only ever see document problems. The
+  // prepared options are reused for every document (one fingerprint
+  // computation, one root parse).
+  const prepared = await prepareOptions(options);
   const notes: string[] = [];
-  const tooLarge: string[] = [];
+  const plan = createInflationPlan();
   let files: Record<string, Uint8Array>;
   try {
     files = unzipSync(zip, {
-      filter: (info: UnzipFileInfo) => {
-        const disposition = classifyEntry(info.name, info.originalSize);
-        if (disposition === 'too-large') tooLarge.push(info.name);
-        return disposition === 'inflate';
-      },
+      filter: (info: UnzipFileInfo) => plan.accept(info.name, info.originalSize),
     });
   } catch (error) {
     return {
@@ -136,8 +223,7 @@ export async function verifyEvidenceZip(
     };
   }
 
-  for (const name of tooLarge)
-    notes.push(`${name}: entry larger than ${MAX_ENTRY_BYTES} bytes was not inflated`);
+  for (const { name, reason } of plan.refused) notes.push(`${name}: ${reason}`);
 
   const readmeEntry = entriesMatching(files, /(^|\/)README\.txt$/i)[0];
   let readme: string | null = null;
@@ -227,12 +313,14 @@ export async function verifyEvidenceZip(
     // key file that is not UTF-8, for instance) is this document's problem:
     // report it as incomplete and carry on with the rest of the archive.
     let verdict: Verdict;
+    let ledgerEntry: LedgerEntryLookup;
     try {
-      verdict = await verifySealedPdf({
-        pdf: bytes,
-        proof: JSON.stringify(assembleProof(seal, files, segment, computedHash)),
-        options,
-      });
+      const assembled = assembleProof(seal, files, segment);
+      ledgerEntry = assembled.ledgerEntry;
+      verdict = await verifySealedPdfPrepared(
+        { pdf: bytes, proof: JSON.stringify(assembled.proof) },
+        prepared,
+      );
     } catch (error) {
       documents.push({
         path,
@@ -255,6 +343,13 @@ export async function verifyEvidenceZip(
       disposition,
     };
     if (verdict.error !== undefined) result.reason = verdict.error;
+    // A segment that is present but has no entry for this document is a
+    // gap in the evidence, not proof of tampering: the document's own
+    // checks stand, the archive cannot be called complete.
+    if (ledgerEntry === 'missing' && result.overall === 'genuine') {
+      result.overall = 'incomplete';
+      result.reason = 'no ledger entry for this document in ledger/segment.json';
+    }
     if (disposition !== null && disposition !== 'active') {
       const when = seal.data.supersededAt ? ` at ${seal.data.supersededAt}` : '';
       const why = seal.data.supersededReason ? ` (${seal.data.supersededReason})` : '';
@@ -271,9 +366,17 @@ export async function verifyEvidenceZip(
 
   let overall = overallOf(documents);
   if (overall === 'genuine' && ledgerSegment && !ledgerSegment.ok) overall = 'altered';
-  if (overall === 'genuine' && tooLarge.length > 0) overall = 'incomplete';
+  if (overall === 'genuine' && plan.refused.length > 0) overall = 'incomplete';
   if (documents.length === 0) notes.push('the archive contains no documents/*.pdf');
   return { overall, documents, sealCount: seals.length, ledgerSegment, readme, notes };
+}
+
+/** Whether the segment supplied this document's ledger block. */
+type LedgerEntryLookup = 'matched' | 'missing' | 'no-segment';
+
+interface AssembledProof {
+  proof: Record<string, unknown>;
+  ledgerEntry: LedgerEntryLookup;
 }
 
 /**
@@ -281,28 +384,40 @@ export async function verifyEvidenceZip(
  * archives kept the public key and the raw token next to the seal JSON
  * (`<seal>.public-key.pem`, `<seal>.tsr`) instead of inside it; both forms
  * are read so an archive produced by either generation verifies. The ledger
- * block comes from the segment, which is the authoritative copy in an
- * archive. Throws on an unreadable side file; the caller reports it.
+ * block always comes from the segment, which is the authoritative copy in an
+ * archive; a `ledger` block inside the seal file is ignored.
+ *
+ * One document can be sealed more than once (a re-issue after a correction
+ * leaves the bytes unchanged), so the segment may hold several entries with
+ * this digest. The entry is chosen by digest AND `sealedAt`, which both the
+ * seal file and the segment carry; a digest-only match is the fallback for a
+ * seal file without `sealedAt`. Throws on an unreadable side file; the
+ * caller reports it.
  */
 function assembleProof(
   seal: SealFile,
   files: Record<string, Uint8Array>,
   segment: LedgerEntry[] | null,
-  computedHash: string,
-): Record<string, unknown> {
+): AssembledProof {
   const base = seal.path.replace(/\.json$/i, '');
-  const pemFile = files[`${base}.public-key.pem`];
-  const tsrFile = files[`${base}.tsr`];
+  const pemFile = sideFile(files, `${base}.public-key.pem`);
+  const tsrFile = sideFile(files, `${base}.tsr`);
   const proof: Record<string, unknown> = { ...seal.data, schemaVersion: 1 };
   if (!proof.publicKeyPem && pemFile) proof.publicKeyPem = bytesToUtf8(pemFile);
   if (!proof.tsaToken && tsrFile) proof.tsaToken = bytesToBase64(tsrFile);
   delete proof.ledger;
-  const entry = segment?.find((e) => constantTimeEqualHex(e.documentHash, computedHash));
-  if (entry)
-    proof.ledger = {
-      seq: entry.seq,
-      previousEntryHash: entry.previousEntryHash,
-      entryHash: entry.entryHash,
-    };
-  return proof;
+  if (segment === null) return { proof, ledgerEntry: 'no-segment' };
+  const byDigest = segment.filter((e) =>
+    constantTimeEqualHex(e.documentHash, seal.data.documentHash),
+  );
+  const entry =
+    byDigest.find((e) => seal.data.sealedAt !== undefined && e.sealedAt === seal.data.sealedAt) ??
+    byDigest[0];
+  if (!entry) return { proof, ledgerEntry: 'missing' };
+  proof.ledger = {
+    seq: entry.seq,
+    previousEntryHash: entry.previousEntryHash,
+    entryHash: entry.entryHash,
+  };
+  return { proof, ledgerEntry: 'matched' };
 }

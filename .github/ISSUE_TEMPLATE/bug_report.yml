@@ -10,7 +10,7 @@ body:
     id: version
     attributes:
       label: Version
-      description: '`npx sealed-pdf-verify --help` prints usage; the version is in package.json. Also say Node version or browser.'
+      description: '`npx sealed-pdf-verify --version` prints it. Also say Node version or browser.'
       placeholder: '0.1.0, Node 22.11, macOS'
     validations:
       required: true

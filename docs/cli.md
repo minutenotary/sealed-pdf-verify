@@ -12,10 +12,17 @@ Options:
   --no-builtin-roots   do not trust the DigiCert / FreeTSA roots shipped with the package
   --no-tsa-trust       skip the timestamp signer-chain check (timestamp: imprint_only at best)
   --json               print the verdict object as JSON
+  -v, --version        print the version
   -h, --help           show this help
 
 Exit status: 0 genuine, 1 altered, 2 incomplete or error.
 ```
+
+`--no-builtin-roots` on its own is a usage error (exit 2): pair it with
+`--tsa-roots`, or with `--no-tsa-trust` to skip the chain check. Proof-derived
+text is stripped of control, bidirectional and zero-width characters before
+it reaches the terminal; `--json` writes those characters as `\uXXXX`
+escapes, which is the same JSON value.
 
 Run it without installing: `npx sealed-pdf-verify ...`. Install globally with
 `npm install -g sealed-pdf-verify`. A container image is published to GHCR on

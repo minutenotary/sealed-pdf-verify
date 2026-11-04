@@ -53,8 +53,9 @@ Verdict: GENUINE
 
 Exit status: `0` genuine, `1` altered, `2` incomplete or error. Add `--json`
 for the verdict as JSON, `--version` for the version. Proof-derived text is
-stripped of control characters before it reaches the terminal (`--json` is
-untouched).
+stripped of control, bidirectional and zero-width characters before it
+reaches the terminal; `--json` writes them as `\uXXXX` escapes instead (the
+same JSON value to any parser).
 
 Proof-only mode (`--proof` without a PDF) checks the proof against its own
 recorded digest. It can prove that the proof is internally consistent, not
@@ -146,8 +147,10 @@ CAs' own sites and mirrored into the library:
 - `freetsa-root.pem` (FreeTSA, `https://freetsa.org/tsr`)
 
 Add roots with `--tsa-roots extra.pem` (CLI) or `tsaRootsPem` (API).
-`--no-builtin-roots` drops the shipped ones; `--no-tsa-trust` skips the chain
-check, in which case the best timestamp result is `imprint_only`.
+`--no-builtin-roots` drops the shipped ones and must come with `--tsa-roots`
+(or `--no-tsa-trust`): with no root at all the CLI exits 2 rather than quietly
+reporting `imprint_only`. `--no-tsa-trust` skips the chain check, in which
+case the best timestamp result is `imprint_only`.
 
 ## Library
 
@@ -319,13 +322,17 @@ DER `TSTInfo`.
   `2.16.840.1.101.3.4.2.1` (SHA-256) and `hashedMessage` = the document
   digest (constant-time). `genTime` is the trusted time. No token →
   `timestamp: none`.
-- Optional ("trust", on by default when roots exist): the CMS `SignerInfo`
+- Optional ("trust", on by default when roots exist): the token carries
+  exactly one `SignerInfo`, whose digest algorithm is SHA-256/384/512 and
+  whose signature algorithm is RSA or ECDSA (SHA-1 is refused outright); its
   signature over the signed attributes verifies (the `messageDigest`
-  attribute equals the digest of `eContent` with the signer's digest
-  algorithm, and the `content-type` attribute names id-ct-TSTInfo); the signer
-  certificate is found in `SignedData.certificates` by `sid`; it carries the
-  timeStamping EKU (`1.3.6.1.5.5.7.3.8`); it was valid at `genTime`; and it
-  chains to a trusted root.
+  attribute equals the digest of `eContent` with that digest algorithm, and
+  the `content-type` attribute names id-ct-TSTInfo); the signer certificate
+  is found in `SignedData.certificates` by `sid`; it carries the extended key
+  usage extension, critical, with id-kp-timeStamping (`1.3.6.1.5.5.7.3.8`) as
+  its only purpose; it was valid at `genTime`; and it chains to a trusted
+  root (a cross-signed copy of a CA inside the token never blocks the path).
+  No revocation data is consulted.
 - Results: `none` | `imprint_only` | `trusted` | `invalid`. `invalid` →
   verdict `altered`.
 
@@ -361,8 +368,13 @@ audit/booking-audit-log.json    ignored by the verifier
 
 For each PDF under `documents/`, the seal whose `documentHash` equals the
 PDF's SHA-256 is verified as above; the ledger block comes from the segment
-entry with the same digest. Missing optional files are tolerated. A top-level
-folder inside the archive is tolerated.
+entry with the same digest and the same `sealedAt` (a document sealed twice
+has two entries), and a `ledger` block inside the seal file is ignored. A
+document the segment does not mention keeps its own checks but makes the
+archive `incomplete`. Only `README.txt`, `seals/`, `ledger/segment.json` and
+`documents/` are inflated: 256 MiB per entry, 1 GiB and 1 000 entries in
+total. Missing optional files are tolerated. A top-level folder inside the
+archive is tolerated.
 
 ### Verdict object
 
@@ -389,7 +401,7 @@ npm ci
 npm run lint && npm run typecheck && npm test   # tests enforce ≥ 90 % line coverage
 npm run check:brand                              # issuer name must not appear in code
 npm run build                                    # dist/ and web/dist/
-npm run fixtures                                 # regenerate test/fixtures/ (one request to freetsa.org)
+npm run fixtures                                 # regenerate test/fixtures/ (one request each to freetsa.org and timestamp.digicert.com)
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) and

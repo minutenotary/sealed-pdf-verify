@@ -94,13 +94,49 @@ describe('verifyTimestampTrust', () => {
     );
     expect((await verifyTimestampTrust({ token: real, roots: digicertOnly })).ok).toBe(false);
   });
-  it('requires the timeStamping EKU', async () => {
-    const res = await verifyTimestampTrust({
+  it('requires the timeStamping EKU, critical, as the only purpose (RFC 3161 §2.3)', async () => {
+    const absent = await verifyTimestampTrust({
       token: readBytes('synthetic-noeku.tsr'),
       roots: [testRoot],
     });
+    expect(absent.ok).toBe(false);
+    expect(absent.reason).toBe(
+      'timestamp signer certificate lacks the timeStamping extended key usage extension',
+    );
+    const noncritical = await verifyTimestampTrust({
+      token: readBytes('synthetic-eku-noncritical.tsr'),
+      roots: [testRoot],
+    });
+    expect(noncritical.ok).toBe(false);
+    expect(noncritical.reason).toBe(
+      'timestamp signer certificate does not mark its extended key usage critical (RFC 3161 §2.3)',
+    );
+    const multi = await verifyTimestampTrust({
+      token: readBytes('synthetic-eku-multi.tsr'),
+      roots: [testRoot],
+    });
+    expect(multi.ok).toBe(false);
+    expect(multi.reason).toBe(
+      'timestamp signer certificate lists purposes other than timeStamping (RFC 3161 §2.3)',
+    );
+  });
+  it('refuses a CMS signature made with SHA-1 before checking it', async () => {
+    const token = readBytes('synthetic-sha1-cms.tsr');
+    // The imprint itself is SHA-256 and matches: only the CMS layer is weak.
+    expect((await verifyTimestampImprint({ token, digest: facts.sampleHash })).ok).toBe(true);
+    expect(parseTimestampToken(token).digestAlgorithm).toBe('1.3.14.3.2.26');
+    const res = await verifyTimestampTrust({ token, roots: [testRoot] });
     expect(res.ok).toBe(false);
-    expect(res.reason).toContain('timeStamping');
+    expect(res.reason).toBe(
+      'timestamp CMS uses digest algorithm 1.3.14.3.2.26, not an accepted SHA-2 digest',
+    );
+  });
+  it('accepts the CMS algorithms the real and synthetic tokens use', () => {
+    expect(parseTimestampToken(synthetic).signatureAlgorithm).toBe('1.2.840.10045.4.3.2');
+    expect(parseTimestampToken(real).digestAlgorithm).toBe('2.16.840.1.101.3.4.2.3');
+    expect(parseTimestampToken(readBytes('real-digicert.tsr')).signatureAlgorithm).toBe(
+      '1.2.840.113549.1.1.1',
+    );
   });
   it('rejects a chain to an unknown root', async () => {
     const res = await verifyTimestampTrust({
@@ -183,12 +219,18 @@ describe('parseTimestampToken — malformed variants fail closed', () => {
       'is not id-ct-TSTInfo',
     );
   });
+  it('rejects a token with two SignerInfos (RFC 3161 §2.4.2)', () => {
+    expect(() => parseTimestampToken(readBytes('synthetic-two-signers.tsr'))).toThrow(
+      'token has 2 SignerInfos; RFC 3161 allows exactly one',
+    );
+  });
   it('reports each of them as an invalid imprint and an untrusted token', async () => {
     for (const name of [
       'synthetic-no-content-type.tsr',
       'synthetic-wrong-content-type.tsr',
       'synthetic-constructed.tsr',
       'synthetic-id-data.tsr',
+      'synthetic-two-signers.tsr',
     ]) {
       const token = readBytes(name);
       expect((await verifyTimestampImprint({ token, digest: facts.sampleHash })).ok, name).toBe(
@@ -212,6 +254,35 @@ describe('verifyTimestampTrust — chain anchoring', () => {
     });
     expect(anchored.ok).toBe(true);
     expect(anchored.pathLength).toBe(2);
+  });
+  it('accepts a TSA whose self-signed certificate is both signer and trust anchor', async () => {
+    // A private TSA (openssl ts) has one self-signed certificate; the chain
+    // is that certificate alone and it must be accepted when it is a root.
+    const token = readBytes('synthetic-selfsigned-tsu.tsr');
+    const anchored = await verifyTimestampTrust({
+      token,
+      roots: [readText('tsa-selfsigned-tsu.pem')],
+    });
+    expect(anchored.ok, anchored.reason).toBe(true);
+    expect(anchored.signer).toContain('Test Self-Signed Timestamp Unit');
+    expect(anchored.pathLength).toBeGreaterThanOrEqual(1);
+    expect((await verifyTimestampTrust({ token, roots: [testRoot] })).ok).toBe(false);
+  });
+  it('chains through a cross-signed intermediate to whichever root is trusted', async () => {
+    // The pool holds the intermediate twice (certified by the test root and
+    // by the unrelated root). Either root must anchor; the dead-end copy
+    // must not abort the search.
+    const token = readBytes('synthetic-cross-signed.tsr');
+    const viaTest = await verifyTimestampTrust({ token, roots: [testRoot] });
+    expect(viaTest.ok, viaTest.reason).toBe(true);
+    expect(viaTest.pathLength).toBe(3);
+    const viaUnrelated = await verifyTimestampTrust({
+      token,
+      roots: [readText('tsa-unrelated-root.pem')],
+    });
+    expect(viaUnrelated.ok, viaUnrelated.reason).toBe(true);
+    expect(viaUnrelated.pathLength).toBe(3);
+    expect((await verifyTimestampTrust({ token, roots: builtIn })).ok).toBe(false);
   });
   it('validates a real DigiCert token (RSA-4096 signer, three-certificate chain) against the shipped root', async () => {
     // The token embeds a cross-signed copy of "DigiCert Trusted Root G4"

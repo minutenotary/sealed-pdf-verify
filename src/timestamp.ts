@@ -19,11 +19,48 @@ export const SHA256_OID = '2.16.840.1.101.3.4.2.1';
 export const TIMESTAMPING_EKU_OID = '1.3.6.1.5.5.7.3.8';
 const EXT_KEY_USAGE_OID = '2.5.29.37';
 
+/**
+ * CMS digest algorithms accepted for the token's own signature: the SHA-2
+ * family. The imprint is SHA-256 by the spec; this is the hash the TSA signs
+ * the signed attributes with. A TSA still signing with SHA-1 is refused
+ * outright: the attacker controls the nonce inside TSTInfo, so a
+ * chosen-prefix SHA-1 collision could let one TSA signature cover a second
+ * TSTInfo with another imprint or genTime. (Both shipped roots' TSAs use
+ * SHA-2: FreeTSA SHA-512, DigiCert SHA-256.)
+ */
+export const ACCEPTED_CMS_DIGEST_OIDS: ReadonlySet<string> = new Set([
+  '2.16.840.1.101.3.4.2.1', // id-sha256
+  '2.16.840.1.101.3.4.2.2', // id-sha384
+  '2.16.840.1.101.3.4.2.3', // id-sha512
+]);
+
+/**
+ * CMS signature algorithms accepted: RSA (PKCS#1 v1.5 with the hash named
+ * either by `digestAlgorithm` or in the OID itself, or RSASSA-PSS) and ECDSA
+ * with SHA-2 (or the bare ecPublicKey form). Anything else, SHA-1 variants
+ * included, is refused before any signature is checked.
+ */
+export const ACCEPTED_CMS_SIGNATURE_OIDS: ReadonlySet<string> = new Set([
+  '1.2.840.113549.1.1.1', // rsaEncryption (hash from digestAlgorithm; DigiCert)
+  '1.2.840.113549.1.1.10', // id-RSASSA-PSS
+  '1.2.840.113549.1.1.11', // sha256WithRSAEncryption
+  '1.2.840.113549.1.1.12', // sha384WithRSAEncryption
+  '1.2.840.113549.1.1.13', // sha512WithRSAEncryption
+  '1.2.840.10045.2.1', // id-ecPublicKey (hash from digestAlgorithm)
+  '1.2.840.10045.4.3.2', // ecdsa-with-SHA256
+  '1.2.840.10045.4.3.3', // ecdsa-with-SHA384
+  '1.2.840.10045.4.3.4', // ecdsa-with-SHA512 (FreeTSA)
+]);
+
 export interface ParsedTimestampToken {
   der: Uint8Array;
   tstInfo: TSTInfo;
   /** `TSTInfo.genTime`. */
   genTime: Date;
+  /** `SignerInfo.digestAlgorithm` OID. */
+  digestAlgorithm: string;
+  /** `SignerInfo.signatureAlgorithm` OID. */
+  signatureAlgorithm: string;
 }
 
 function tokenBytes(token: string | Uint8Array): Uint8Array {
@@ -53,6 +90,13 @@ export function parseTimestampToken(token: string | Uint8Array): ParsedTimestamp
   if (!(genTime instanceof Date) || Number.isNaN(genTime.getTime())) {
     throw new Error('TSTInfo genTime is not a valid time');
   }
+  // RFC 3161 §2.4.2: a TimeStampToken carries exactly one SignerInfo. Every
+  // later step reads index 0, so a second signer could never be checked.
+  if (signedData.signerInfos.length !== 1) {
+    throw new Error(
+      `token has ${signedData.signerInfos.length} SignerInfos; RFC 3161 allows exactly one`,
+    );
+  }
   // RFC 5652 §11.1: the signed content-type attribute must name the eContentType.
   const signer = signedData.signerInfos[0];
   if (!signer) throw new Error('token has no SignerInfo');
@@ -66,7 +110,24 @@ export function parseTimestampToken(token: string | Uint8Array): ParsedTimestamp
   if (parsed.result.valueBlock.toString() !== id_ct_tstInfo) {
     throw new Error('token content-type attribute does not name id-ct-TSTInfo');
   }
-  return { der, tstInfo, genTime };
+  return {
+    der,
+    tstInfo,
+    genTime,
+    digestAlgorithm: signer.digestAlgorithm.algorithm,
+    signatureAlgorithm: signer.signatureAlgorithm.algorithm,
+  };
+}
+
+/** The reason a token's CMS algorithms are refused, or null when both are accepted. */
+export function cmsAlgorithmProblem(parsed: ParsedTimestampToken): string | null {
+  if (!ACCEPTED_CMS_DIGEST_OIDS.has(parsed.digestAlgorithm)) {
+    return `timestamp CMS uses digest algorithm ${parsed.digestAlgorithm}, not an accepted SHA-2 digest`;
+  }
+  if (!ACCEPTED_CMS_SIGNATURE_OIDS.has(parsed.signatureAlgorithm)) {
+    return `timestamp CMS uses signature algorithm ${parsed.signatureAlgorithm}, not an accepted RSA or ECDSA algorithm`;
+  }
+  return null;
 }
 
 export interface ImprintInput {
@@ -168,36 +229,59 @@ export function parseRootCertificates(
   return certs;
 }
 
-function spkiDer(cert: pkijs.Certificate): Uint8Array {
-  return new Uint8Array(cert.subjectPublicKeyInfo.toSchema().toBER(false));
+/** The certificate's TBS bytes, the identity pkijs compares anchors by. */
+function tbsOf(cert: pkijs.Certificate): Uint8Array {
+  return cert.tbsView.byteLength > 0 ? cert.tbsView : new Uint8Array(cert.encodeTBS().toBER());
+}
+
+function isAnchor(cert: pkijs.Certificate, trusted: readonly pkijs.Certificate[]): boolean {
+  const tbs = tbsOf(cert);
+  return trusted.some((root) => constantTimeEqual(tbsOf(root), tbs));
 }
 
 /**
- * Removes from the token's certificate pool every certificate that has the
- * same subject and the same public key as a trusted root.
+ * Issuer finder for pkijs's chain engine that leaves dead ends unexplored.
  *
- * Public TSAs embed a *cross-signed* copy of their root (DigiCert does: a
- * "Trusted Root G4" issued by DigiCert Global Root CA, same key, different
- * serial). pkijs picks that copy as the intermediate's issuer because it
- * matches by name and key, follows it to a CA nobody supplied, and reports
- * "no valid certificate paths" although the genuine, self-signed root was in
- * `trustedCerts` all along. With the shadow removed the chain ends at the
- * trusted copy, whose key is the same, so nothing is trusted that was not
- * trusted before: a certificate with a trusted root's name but another key is
- * kept and simply fails to anchor.
+ * `defaultFindIssuer` returns every certificate in the pool or the anchors
+ * whose name (or authority key identifier) matches and whose key verifies
+ * the child. `buildPath` then throws "No valid certificate paths found" the
+ * moment ANY candidate has no issuer of its own, and that throw unwinds the
+ * whole search, so one dead-end branch hides a valid path next to it. Real
+ * tokens have such branches: DigiCert embeds a cross-signed "DigiCert Trusted
+ * Root G4" (issued by DigiCert Assured ID Root CA, same key as the shipped
+ * self-signed root, a different serial); a CA in transition ships one
+ * intermediate certified by two roots.
+ *
+ * This finder keeps a candidate only if it is a trust anchor itself, is
+ * self-signed (pkijs ends the path there and rejects it as untrusted, which
+ * is harmless), or has an issuer path of its own. It adds nothing to the pool
+ * or the anchors and verifies nothing itself: a certificate that was not
+ * trusted before is not trusted now; a dead end is simply not walked into.
+ * Cross-signing cycles (A certifies B, B certifies A) are cut by the
+ * `visited` list.
  */
-function dropShadowedRoots(
-  pool: NonNullable<pkijs.SignedData['certificates']>,
-  trustedCerts: pkijs.Certificate[],
-): NonNullable<pkijs.SignedData['certificates']> {
-  const trusted = trustedCerts.map((cert) => ({ subject: cert.subject, spki: spkiDer(cert) }));
-  return pool.filter((candidate) => {
-    if (!(candidate instanceof pkijs.Certificate)) return true;
-    const spki = spkiDer(candidate);
-    return !trusted.some(
-      (root) => root.subject.isEqual(candidate.subject) && constantTimeEqual(root.spki, spki),
-    );
-  });
+function pruningFindIssuer(): pkijs.FindIssuerCallback {
+  const find = async (
+    certificate: pkijs.Certificate,
+    engine: pkijs.CertificateChainValidationEngine,
+    crypto: pkijs.ICryptoEngine | undefined,
+    visited: readonly Uint8Array[],
+  ): Promise<pkijs.Certificate[]> => {
+    const candidates = await engine.defaultFindIssuer(certificate, engine, crypto);
+    const kept: pkijs.Certificate[] = [];
+    for (const candidate of candidates) {
+      if (isAnchor(candidate, engine.trustedCerts) || candidate.subject.isEqual(candidate.issuer)) {
+        kept.push(candidate);
+        continue;
+      }
+      const tbs = tbsOf(candidate);
+      if (visited.some((seen) => constantTimeEqual(seen, tbs))) continue;
+      const own = await find(candidate, engine, crypto, [...visited, tbs]);
+      if (own.length > 0) kept.push(candidate);
+    }
+    return kept;
+  };
+  return (certificate, engine, crypto) => find(certificate, engine, crypto, [tbsOf(certificate)]);
 }
 
 function subjectString(cert: pkijs.Certificate): string {
@@ -230,7 +314,8 @@ function hasStrictTimeStampingEku(cert: pkijs.Certificate): string | null {
 }
 
 /**
- * Optional check: the CMS signature over the signed attributes verifies with
+ * Optional check: the token's CMS digest and signature algorithms are in the
+ * accepted sets, the CMS signature over the signed attributes verifies with
  * the signer certificate found by `sid`, that certificate carries the
  * timeStamping EKU (critical, sole purpose), was valid at `genTime`, and
  * chains to one of `roots`. No revocation data is consulted: offline
@@ -246,6 +331,10 @@ export async function verifyTimestampTrust(input: TrustInput): Promise<TrustResu
     parsed = parseTimestampToken(input.token);
   } catch (error) {
     return { ok: false, signer: null, pathLength: 0, reason: `token: ${messageOf(error)}` };
+  }
+  const algorithmProblem = cmsAlgorithmProblem(parsed);
+  if (algorithmProblem !== null) {
+    return { ok: false, signer: null, pathLength: 0, reason: algorithmProblem };
   }
   let trustedCerts: pkijs.Certificate[];
   try {
@@ -269,9 +358,6 @@ export async function verifyTimestampTrust(input: TrustInput): Promise<TrustResu
   } catch (error) {
     return { ok: false, signer: null, pathLength: 0, reason: `token: ${messageOf(error)}` };
   }
-  if (signedData.certificates)
-    signedData.certificates = dropShadowedRoots(signedData.certificates, trustedCerts);
-
   // Relabel the encapsulated content as id-data before calling pkijs.
   //
   // pkijs's TSTInfo branch (SignedData.verify, eContentType === id-ct-TSTInfo)
@@ -302,6 +388,7 @@ export async function verifyTimestampTrust(input: TrustInput): Promise<TrustResu
       checkDate: parsed.genTime,
       checkChain: true,
       extendedMode: true,
+      findIssuer: pruningFindIssuer(),
     });
   } catch (error) {
     const detail = error instanceof pkijs.SignedDataVerifyError ? error.message : messageOf(error);

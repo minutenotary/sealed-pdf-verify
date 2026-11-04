@@ -48,7 +48,6 @@
   },
   "files": [
     "dist",
-    "trust",
     "tsa-roots",
     "README.md",
     "CHANGELOG.md",

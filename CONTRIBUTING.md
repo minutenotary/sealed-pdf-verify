@@ -7,8 +7,8 @@ Thanks for helping keep this verifier correct. A few rules keep it trustworthy.
 1. **Never weaken a check to make a test pass.** If a fixture no longer
    verifies, the fixture or the verifier has a bug; find out which.
 2. **Offline only.** No `fetch`, no analytics, no CDN assets in `src/`,
-   `cli/` or `web/`. The only network call in the repository is the fixture
-   generator's one request to a public timestamp authority.
+   `cli/` or `web/`. The only network calls in the repository are the fixture
+   generator's two requests, one each to FreeTSA and DigiCert.
 3. **Runtime-neutral library.** `src/` must not import `node:*`; ESLint
    enforces it. Node-only code lives in `cli/`.
 4. **No issuer branding in code.** `scripts/check-no-brand.mjs` fails the
@@ -65,6 +65,7 @@ CA's own site and say where it came from in the pull request.
 - Keep changes small and focused; include tests for every new branch.
 - Add a line to `CHANGELOG.md` under "Unreleased".
 - CI runs lint, typecheck, tests, the brand check, both builds and the
-  package lint on Node 20 and 22; all must be green.
+  package lint on Node 22 and 24, and the built package on Node 20; all must
+  be green.
 - Be kind; the [Code of Conduct](CODE_OF_CONDUCT.md) applies everywhere in
   this project.

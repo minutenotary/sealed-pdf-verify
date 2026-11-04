@@ -1,8 +1,35 @@
 import { unzipSync, zipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
-import { verifyEvidenceZip } from '../src/index.js';
-import { MAX_ENTRY_BYTES, classifyEntry } from '../src/evidence.js';
+import { computeLedgerEntryHash, verifyEvidenceZip } from '../src/index.js';
+import {
+  MAX_ENTRY_BYTES,
+  MAX_INFLATED_BYTES,
+  MAX_INFLATED_ENTRIES,
+  classifyEntry,
+  createInflationPlan,
+} from '../src/evidence.js';
 import { readBytes, readText } from './helpers.js';
+
+/**
+ * Rewrites the uncompressed size a ZIP's central directory declares for one
+ * entry (the figure fflate allocates from and the verifier judges by), so a
+ * deflated entry can claim any size without a gigabyte of input.
+ */
+function patchDeclaredSize(zip: Uint8Array, name: string, size: number): Uint8Array {
+  const out = new Uint8Array(zip);
+  const nameBytes = new TextEncoder().encode(name);
+  for (let i = 0; i + 46 <= out.length; i += 1) {
+    if (out[i] !== 0x50 || out[i + 1] !== 0x4b || out[i + 2] !== 0x01 || out[i + 3] !== 0x02)
+      continue;
+    const nameLength = (out[i + 28] ?? 0) | ((out[i + 29] ?? 0) << 8);
+    const entryName = out.subarray(i + 46, i + 46 + nameLength);
+    if (entryName.length !== nameBytes.length || !entryName.every((b, j) => b === nameBytes[j]))
+      continue;
+    new DataView(out.buffer, out.byteOffset).setUint32(i + 24, size, true);
+    return out;
+  }
+  throw new Error(`no central directory entry for ${name}`);
+}
 
 const evidence = readBytes('evidence.zip');
 const base = unzipSync(evidence);
@@ -234,6 +261,38 @@ function storedZip(
   return out;
 }
 
+describe('createInflationPlan', () => {
+  it('applies the per-entry cap, the total budget and the entry count, in that order', () => {
+    const plan = createInflationPlan({ entryBytes: 100, totalBytes: 250, entries: 3 });
+    expect(plan.accept('audit/log.json', 10)).toBe(false); // never wanted, not refused
+    expect(plan.accept('documents/a.pdf', 100)).toBe(true);
+    expect(plan.accept('documents/b.pdf', 101)).toBe(false); // over the entry cap
+    expect(plan.accept('documents/c.pdf', 100)).toBe(true);
+    expect(plan.accept('documents/d.pdf', 60)).toBe(false); // 260 > 250
+    expect(plan.accept('documents/e.pdf', 50)).toBe(true); // exactly 250
+    expect(plan.accept('seals/f.json', 1)).toBe(false); // fourth entry
+    expect(plan.refused.map((r) => r.name)).toEqual([
+      'documents/b.pdf',
+      'documents/d.pdf',
+      'seals/f.json',
+    ]);
+    expect(plan.refused[0]?.reason).toContain('larger than 100 bytes');
+    expect(plan.refused[1]?.reason).toContain('250-byte archive budget');
+    expect(plan.refused[2]?.reason).toContain('already has 3 inflated entries');
+  });
+  it('ships with the documented defaults', () => {
+    expect(MAX_ENTRY_BYTES).toBe(256 * 1024 * 1024);
+    expect(MAX_INFLATED_BYTES).toBe(1024 * 1024 * 1024);
+    expect(MAX_INFLATED_ENTRIES).toBe(1000);
+    const plan = createInflationPlan();
+    expect(plan.accept('documents/a.pdf', MAX_ENTRY_BYTES)).toBe(true);
+    expect(plan.accept('documents/b.pdf', MAX_ENTRY_BYTES)).toBe(true);
+    expect(plan.accept('documents/c.pdf', MAX_ENTRY_BYTES)).toBe(true);
+    expect(plan.accept('documents/d.pdf', MAX_ENTRY_BYTES)).toBe(true);
+    expect(plan.accept('documents/e.pdf', 1)).toBe(false); // 1 GiB spent
+  });
+});
+
 describe('verifyEvidenceZip — fail-closed edges', () => {
   it('classifies entries: only the paths it reads are inflated, each within the cap', () => {
     expect(classifyEntry('documents/a.pdf', 10)).toBe('inflate');
@@ -245,6 +304,41 @@ describe('verifyEvidenceZip — fail-closed edges', () => {
     expect(classifyEntry('__MACOSX/._x', 10)).toBe('skip');
     expect(classifyEntry('documents/a.pdf', MAX_ENTRY_BYTES)).toBe('inflate');
     expect(classifyEntry('documents/a.pdf', MAX_ENTRY_BYTES + 1)).toBe('too-large');
+  });
+  it('does not inflate a deflated entry whose declared size exceeds the cap', async () => {
+    const big = new Uint8Array(1024 * 1024); // compresses to a few bytes
+    const zip = patchDeclaredSize(
+      rezip({ 'documents/bomb.pdf': big }),
+      'documents/bomb.pdf',
+      MAX_ENTRY_BYTES + 1,
+    );
+    const res = await verifyEvidenceZip(zip);
+    expect(res.overall).toBe('incomplete');
+    expect(res.documents.map((d) => d.path)).not.toContain('documents/bomb.pdf');
+    expect(res.notes.some((n) => n.includes('bomb.pdf') && n.includes('not inflated'))).toBe(true);
+    // The rest of the archive is still checked.
+    expect(res.documents.find((d) => d.path === 'documents/sample.pdf')?.overall).toBe('genuine');
+  });
+  it('fails closed on a central directory that under-declares a deflated entry', async () => {
+    // fflate allocates the declared 100 bytes and stops there, so the PDF
+    // comes out truncated and matches no seal: incomplete, never a crash.
+    const zip = patchDeclaredSize(
+      rezip({ 'documents/lying.pdf': new Uint8Array(8 * 1024 * 1024) }),
+      'documents/lying.pdf',
+      100,
+    );
+    const res = await verifyEvidenceZip(zip);
+    expect(res.overall).toBe('incomplete');
+    const lying = res.documents.find((d) => d.path === 'documents/lying.pdf');
+    expect(lying?.overall).toBe('incomplete');
+    expect(lying?.reason).toContain('no seal');
+  });
+  it('stops inflating after the entry budget, whatever the sizes', async () => {
+    const extra: Record<string, Uint8Array> = {};
+    for (let i = 0; i < MAX_INFLATED_ENTRIES; i += 1) extra[`seals/pad-${i}.json`] = enc('{}');
+    const res = await verifyEvidenceZip(rezip(extra));
+    expect(res.overall).toBe('incomplete');
+    expect(res.notes.filter((n) => n.includes('already has')).length).toBeGreaterThan(0);
   });
   it('does not inflate an entry that claims to be larger than the cap', async () => {
     const zip = storedZip([
@@ -286,6 +380,73 @@ describe('verifyEvidenceZip — fail-closed edges', () => {
     expect(res.notes.some((n) => n.includes(SEAL2) && n.includes('matches no document'))).toBe(
       true,
     );
+  });
+  it('pairs a document sealed twice with the ledger entry of its own seal (by sealedAt)', async () => {
+    // sample.pdf sealed at T1 (entry #1) and re-issued unchanged at T2
+    // (entry #2). The re-issue's seal file sorts first; its ledger block must
+    // come from entry #2, not from the first entry with the same digest.
+    const seal1 = JSON.parse(new TextDecoder().decode(base[SEAL1])) as Record<string, unknown>;
+    const segment = JSON.parse(new TextDecoder().decode(base['ledger/segment.json'])) as {
+      seq: number;
+      documentHash: string;
+      previousEntryHash: string;
+      entryHash: string;
+      sealedAt: string;
+    }[];
+    const first = segment[0];
+    expect(first?.documentHash).toBe(seal1.documentHash);
+    if (!first) throw new Error('fixture segment is empty');
+    const reissuedAt = '2026-12-01T09:00:00.000Z';
+    const second = {
+      seq: first.seq + 1,
+      documentHash: first.documentHash,
+      previousEntryHash: first.entryHash,
+      sealedAt: reissuedAt,
+      entryHash: '',
+    };
+    second.entryHash = await computeLedgerEntryHash(second);
+    const reseal = { ...seal1, sealId: 'SPV-TEST-RESEAL', sealedAt: reissuedAt };
+    const res = await verifyEvidenceZip(
+      rezip({
+        'seals/A-reseal.json': enc(JSON.stringify(reseal)),
+        [SEAL2]: null,
+        'documents/second.pdf': null,
+        'ledger/segment.json': enc(JSON.stringify([first, second])),
+      }),
+    );
+    expect(res.ledgerSegment?.ok).toBe(true);
+    const doc = res.documents.find((d) => d.path === 'documents/sample.pdf');
+    expect(doc?.sealId).toBe('SPV-TEST-RESEAL');
+    expect(doc?.verdict?.checks.ledger).toBe('consistent');
+    expect(res.overall).toBe('genuine');
+  });
+  it('reports a document the segment does not mention as incomplete, not genuine', async () => {
+    const segment = JSON.parse(new TextDecoder().decode(base['ledger/segment.json'])) as {
+      seq: number;
+    }[];
+    // Keep only the second entry: a valid slice that no longer covers sample.pdf.
+    const res = await verifyEvidenceZip(
+      rezip({ 'ledger/segment.json': enc(JSON.stringify(segment.slice(1))) }),
+    );
+    expect(res.ledgerSegment?.ok).toBe(true);
+    const sample = res.documents.find((d) => d.path === 'documents/sample.pdf');
+    expect(sample?.verdict?.checks.ledger).toBe('not_checked');
+    expect(sample?.overall).toBe('incomplete');
+    expect(sample?.reason).toBe('no ledger entry for this document in ledger/segment.json');
+    expect(res.documents.find((d) => d.path === 'documents/second.pdf')?.overall).toBe('genuine');
+    expect(res.overall).toBe('incomplete');
+  });
+  it('reads side files whatever their case, like seal files', async () => {
+    const seal = JSON.parse(new TextDecoder().decode(base[SEAL1])) as Record<string, unknown>;
+    const pem = seal.publicKeyPem;
+    delete seal.publicKeyPem;
+    const res = await verifyEvidenceZip(
+      rezip({
+        [SEAL1]: enc(JSON.stringify(seal)),
+        'seals/SPV-TEST-000001.PUBLIC-KEY.PEM': enc(String(pem)),
+      }),
+    );
+    expect(res.documents.find((d) => d.path.endsWith('sample.pdf'))?.overall).toBe('genuine');
   });
   it('throws on invalid options before touching any document', async () => {
     await expect(verifyEvidenceZip(evidence, { trustedKeyFingerprints: ['nope'] })).rejects.toThrow(

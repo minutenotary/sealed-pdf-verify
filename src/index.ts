@@ -1,5 +1,11 @@
-export { verifySealedPdf, PROOF_ONLY_NOTE } from './verify.js';
-export { verifyEvidenceZip } from './evidence.js';
+export { verifySealedPdf, prepareOptions, PROOF_ONLY_NOTE } from './verify.js';
+export type { PreparedOptions } from './verify.js';
+export {
+  verifyEvidenceZip,
+  MAX_ENTRY_BYTES,
+  MAX_INFLATED_BYTES,
+  MAX_INFLATED_ENTRIES,
+} from './evidence.js';
 export type { EvidenceDocumentResult, EvidenceResult } from './evidence.js';
 export { parseProof } from './proof.js';
 export { ProofFormatError } from './errors.js';
@@ -23,6 +29,8 @@ export {
   parseTimestampToken,
   SHA256_OID,
   TIMESTAMPING_EKU_OID,
+  ACCEPTED_CMS_DIGEST_OIDS,
+  ACCEPTED_CMS_SIGNATURE_OIDS,
 } from './timestamp.js';
 export type {
   ImprintInput,

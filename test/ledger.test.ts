@@ -82,7 +82,7 @@ describe('verifyLedgerSegment', () => {
     const genesis0 = { ...entry1, seq: 0, previousEntryHash: 'c'.repeat(64) };
     genesis0.entryHash = await computeLedgerEntryHash(genesis0);
     expect((await verifyLedgerSegment([genesis0])).reason).toBe(
-      'genesis entry must link to 64 zeros',
+      'entry #0 is the genesis entry and must link to 64 zeros',
     );
     const proper = { ...entry1, seq: 0 };
     proper.entryHash = await computeLedgerEntryHash(proper);
@@ -111,6 +111,21 @@ describe('genesis rule', () => {
     const segment = await verifyLedgerSegment([{ ...entry1, ...forged }]);
     expect(segment.ok).toBe(false);
     expect(segment.reason).toContain('genesis');
+  });
+  it('requires seq 0 to link to the genesis value, in an entry and in a segment', async () => {
+    const block = { seq: 0, previousEntryHash: 'a'.repeat(64), entryHash: '' };
+    block.entryHash = await computeLedgerEntryHash({
+      seq: 0,
+      documentHash: entry1.documentHash,
+      previousEntryHash: block.previousEntryHash,
+      sealedAt: entry1.sealedAt,
+    });
+    const single = await verifyLedgerEntry(block, entry1.documentHash, entry1.sealedAt);
+    expect(single.ok).toBe(false);
+    expect(single.reason).toBe('entry #0 is the genesis entry and must link to 64 zeros');
+    const segment = await verifyLedgerSegment([{ ...entry1, ...block }]);
+    expect(segment.ok).toBe(false);
+    expect(segment.reason).toBe(single.reason);
   });
   it('refuses a seq that would not print as a decimal integer', async () => {
     await expect(computeLedgerEntryHash({ ...entry1, seq: 1e21 })).rejects.toThrow('safe integer');

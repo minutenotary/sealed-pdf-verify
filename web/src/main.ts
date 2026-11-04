@@ -114,7 +114,14 @@ function accept(file: File): boolean {
   return true;
 }
 
+// Every verification run takes a number; only the latest run may touch the
+// result panel. Without it, dropping a corrected PDF while a slow archive is
+// still being checked could end with the OLD verdict landing last, under the
+// new file name. Clear advances it too, so a late result stays gone.
+let currentRun = 0;
+
 function clearResult(): void {
+  currentRun += 1;
   result.hidden = true;
   result.replaceChildren();
   result.setAttribute('aria-busy', 'false');
@@ -146,27 +153,32 @@ function options(): VerifyOptions {
 }
 
 async function verify(): Promise<void> {
+  currentRun += 1;
+  const run = currentRun;
   verifyButton.disabled = true;
   showResult(renderSkeleton(), { busy: true });
+  let node: HTMLElement;
   try {
     if (files.zip !== null) {
       const bytes = new Uint8Array(await files.zip.arrayBuffer());
-      showResult(renderEvidence(await verifyEvidenceZip(bytes, options())));
+      node = renderEvidence(await verifyEvidenceZip(bytes, options()));
     } else if (files.proof !== null) {
       const input: VerifyInput = {
         proof: new Uint8Array(await files.proof.arrayBuffer()),
         options: options(),
       };
       if (files.pdf !== null) input.pdf = new Uint8Array(await files.pdf.arrayBuffer());
-      showResult(renderVerdict(await verifySealedPdf(input)));
+      node = renderVerdict(await verifySealedPdf(input));
     } else {
-      showResult(renderFailure('Choose a proof file (with its PDF) or an evidence archive first.'));
+      node = renderFailure('Choose a proof file (with its PDF) or an evidence archive first.');
     }
   } catch (error) {
-    showResult(renderFailure(error instanceof Error ? error.message : String(error)));
-  } finally {
-    renderSlots();
+    node = renderFailure(error instanceof Error ? error.message : String(error));
   }
+  // A newer run (or Clear) owns the panel now; this result is stale.
+  if (run !== currentRun) return;
+  showResult(node);
+  renderSlots();
 }
 
 /** After any change to `files`: update the slots, guide the next step, auto-run when complete. */

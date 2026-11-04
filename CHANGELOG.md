@@ -6,95 +6,76 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-### Fixed
+## [0.1.0] - 2026-11-04
 
-- A 64-byte P1363 signature whose `r` begins with `0x30` (about one in 256)
-  was handed to the DER parser and rejected, turning a genuine document into
-  "altered". The length now decides the encoding.
-- A real DigiCert timestamp token failed trust evaluation ("no valid
-  certificate paths") because the token embeds a cross-signed copy of the
-  DigiCert Trusted Root G4 that shadowed the shipped self-signed root. Copies
-  of a trusted root (same subject, same key) are now dropped from the token's
-  certificate pool before path building.
-- `verifyEvidenceZip` could throw on a key file that is not UTF-8; that
-  document is now reported `incomplete` and the rest of the archive is still
-  checked.
-- Seal files were matched case-sensitively while PDFs were not; both are now
-  case-insensitive.
+First release. Two independent review rounds ran before it and their findings
+are part of this version; nothing was published earlier, so there is no
+previous behaviour to list as fixed.
+
+### Added
+
+- `verifySealedPdf()`: the five checks (hash, signature, key, timestamp,
+  ledger) with a `genuine` / `altered` / `incomplete` verdict, proof-only mode
+  and key pinning by fingerprint or PEM. Document input never throws; invalid
+  options (a malformed fingerprint, an unparsable trusted key or root, a root
+  string with no CERTIFICATE block) throw `TypeError` and are never reported as
+  "altered". `prepareOptions()` exposes the same validation.
+- `verifyEvidenceZip()`: verifies every PDF in an evidence archive against the
+  matching seal, pairs each with its ledger entry by digest and `sealedAt`,
+  checks the segment, notes seals without a document and documents the segment
+  does not mention.
+- Helpers: `sha256Hex`, `parseProof`, `verifySignature`,
+  `verifyTimestampImprint`, `verifyTimestampTrust`, `computeLedgerEntryHash`,
+  `keyFingerprint`, `verifyLedgerSegment`, the accepted CMS algorithm sets and
+  the archive inflation limits.
+- Command-line tool `sealed-pdf-verify` (exit 0 genuine, 1 altered,
+  2 incomplete or usage error, `--json`, `--version`). Archives are recognised
+  by their bytes. Usage errors: an empty `--trust` file, `--no-builtin-roots`
+  without `--tsa-roots` (unless `--no-tsa-trust`), a `--tsa-roots` file with no
+  CERTIFICATE block, `--proof` together with an archive.
+- Browser verifier: one HTML file that works offline and makes no request;
+  file slots with explicit states, drag-and-drop anywhere, a verdict panel
+  that names the five checks in plain words, copy controls, local-time
+  rendering, dark scheme and reduced-motion support.
+- Built-in RFC 3161 roots: DigiCert Trusted Root G4 and the FreeTSA root,
+  their SHA-256 pinned in the test suite.
+- Specification of the proof format (schema version 1) in the README and docs.
+- ESM and CommonJS builds with type declarations for both (`publint` and
+  `@arethetypeswrong/cli` clean); the CommonJS and CLI bundles are minified
+  without source maps, the ESM build keeps its map.
+- `npm run check` (the full CI gate), `check:pack`, `check:web` (the built page
+  contains no network code). CI on Node 22 and 24 with a Node 20 runtime job,
+  every Action pinned to a commit SHA; CodeQL; Dependabot for npm, Actions and
+  Docker; a distroless container image pinned by digest that carries only the
+  bundled CLI; issue and pull request templates, a Code of Conduct, `.nvmrc`.
+- Fixtures: a real FreeTSA and a real DigiCert token, a synthetic TSA with
+  malformed, weak and unusual variants (missing or wrong content-type
+  attribute, constructed content, plain id-data CMS, embedded self-signed
+  root, non-critical or multi-purpose EKU, SHA-1 CMS signature, two
+  SignerInfos, a self-signed timestamp unit, a cross-signed intermediate), a
+  P1363 proof whose `r` starts with 0x30, and tests for every one of them.
 
 ### Security
 
-- The CLI strips control characters from proof-derived text (seal id, key id,
-  URLs, archive paths) so a crafted proof cannot move the cursor and overwrite
-  the verdict line. `--json` is untouched.
-- The browser page turns `verifyUrl` into a link only when it is an https URL;
-  `javascript:`, `data:` and plain-http values are shown as text.
+- Signatures: strict DER `Ecdsa-Sig-Value` parsing; a 64-byte value is P1363
+  and anything else must be DER (the length decides, never the first byte).
+- Timestamps: the imprint must be SHA-256; the token must carry exactly one
+  `SignerInfo` whose digest algorithm is SHA-2 and whose signature algorithm
+  is RSA or ECDSA (SHA-1 is refused before any signature is checked); the
+  signer's extended key usage must be critical and contain only
+  id-kp-timeStamping; the chain must end at a supplied root, and a dead-end
+  candidate in the token (a cross-signed copy of a CA) never hides a valid
+  path. A self-signed timestamp unit supplied as a root is accepted. No
+  revocation data is consulted (documented in the threat model).
+- Ledger: a zero link is accepted at seq 0 and 1 only; seq 0 must carry the
+  zero link; `seq` must be a safe integer.
 - Evidence archives: only `README.txt`, `seals/`, `ledger/segment.json` and
-  `documents/` are inflated, each capped at 256 MiB; an oversized entry makes
-  the archive `incomplete` instead of exhausting memory.
-- The timestamp signer's extended key usage must now be critical and contain
-  only id-kp-timeStamping (RFC 3161 §2.3). Both public TSAs the package ships
-  roots for comply.
-- A ledger entry from seq 2 on that links to the genesis value (64 zeros) is
-  reported inconsistent; `seq` must be a safe integer.
-- The two shipped roots' SHA-256 fingerprints are pinned in the test suite.
-
-### Changed
-
-- Invalid `options` (a malformed fingerprint, an unparsable trusted key or
-  root certificate) throw `TypeError` instead of being ignored or reported as
-  `key: rejected` / `timestamp: invalid`; `prepareOptions()` exposes the same
-  validation. `timestamp: invalid` is reserved for a chain that was evaluated
-  and failed; with no usable root the check is `imprint_only` and says why.
-- CLI usage errors (exit 2): an empty `--trust` file, `--no-builtin-roots`
-  without `--tsa-roots` (unless `--no-tsa-trust`), a `--tsa-roots` file with no
-  CERTIFICATE block, `--proof` together with an evidence archive. Archives are
-  recognised by their bytes, not their extension.
-- `sealed-pdf-verify --version`.
-- `verifyEvidenceZip` notes seals that match no document in the archive.
-- CI pins every GitHub Action to a commit SHA, runs the gate on Node 22 and
-  24 and exercises the built package on Node 20; the container image carries
-  only the bundled CLI.
-
-- Browser page redesigned: file slots with explicit empty / chosen / checking
-  states, drag-and-drop anywhere on the page, a verdict panel that names the
-  five checks in plain words, copy controls for the digest and the key
-  fingerprint, local-time rendering next to every timestamp, dark colour
-  scheme, reduced-motion support.
-- `require('sealed-pdf-verify')` now resolves CommonJS type declarations
-  (`dist/index.d.cts`); the package passes `publint` and
-  `@arethetypeswrong/cli`.
-- The self-contained CommonJS and CLI bundles no longer ship source maps
-  (8 MB less in the tarball); the ESM build keeps its map.
-
-### Added
-
-- `npm run check` (the full CI gate), `npm run check:pack` (publint +
-  arethetypeswrong) and `npm run check:web` (the built page contains no
-  network code; Vite's modulepreload polyfill is disabled).
-- Fixtures: a real DigiCert token, a P1363 proof whose `r` starts with 0x30,
-  malformed token variants (missing or wrong content-type attribute,
-  constructed content, plain id-data CMS) and a token that embeds its own
-  self-signed root; tests for every one of them, a table-driven test of the
-  verdict rule over all 216 check combinations, and jsdom tests for the page's
-  renderers.
-- CodeQL and Dependabot configuration, issue and pull request templates,
-  a Code of Conduct and `.nvmrc`.
-
-## [0.1.0] - 2026-11-04
-
-### Added
-
-- `verifySealedPdf()`: the five checks (hash, signature, key, timestamp, ledger)
-  with a `genuine` / `altered` / `incomplete` verdict, proof-only mode and
-  key pinning by fingerprint or PEM.
-- `verifyEvidenceZip()`: verifies every PDF in an evidence archive against the
-  matching seal and checks the ledger segment.
-- Helpers: `sha256Hex`, `parseProof`, `verifySignature`,
-  `verifyTimestampImprint`, `verifyTimestampTrust`, `computeLedgerEntryHash`,
-  `keyFingerprint`, `verifyLedgerSegment`.
-- Command-line tool `sealed-pdf-verify` (exit 0 genuine, 1 altered,
-  2 incomplete/error, `--json` output).
-- Browser verifier (single HTML file, works offline, no network requests).
-- Built-in RFC 3161 roots: DigiCert Trusted Root G4 and the FreeTSA root.
-- Specification of the proof format (schema version 1) in the README and docs.
+  `documents/` are inflated, 256 MiB per entry, 1 GiB and 1 000 entries in
+  total; a refused entry makes the archive `incomplete`; each document is
+  assembled under its own try/catch; paths, seal files and side files match
+  case-insensitively.
+- CLI: proof-derived text is stripped of control, bidirectional and
+  zero-width characters; `--json` escapes them as `\uXXXX`.
+- Browser page: `verifyUrl` becomes a link only when it is https; a
+  verification run that finishes after a newer one started (or after Clear)
+  never paints the panel.
