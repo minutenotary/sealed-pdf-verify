@@ -21,6 +21,8 @@ timestamp), and that the seal sits in the issuer's public append-only ledger.
   HTML file that works from `file://` and offline. Hosted copy:
   <https://minutenotary.github.io/sealed-pdf-verify/>.
 
+Documentation: <https://sealed-pdf-verify.readthedocs.io/>.
+
 Online check by the issuer: `https://minutenotary.ca/verify/<sealId>` (the
 seal id is printed on the document as `Code: <sealId>` and encoded in its
 QR). This tool is the offline, independent second opinion.
