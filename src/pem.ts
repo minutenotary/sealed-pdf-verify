@@ -5,15 +5,55 @@ export interface PemBlock {
   der: Uint8Array;
 }
 
-const PEM_RE = /-----BEGIN ([A-Z0-9 ]+)-----([\s\S]*?)-----END \1-----/g;
+const BEGIN_RE = /-----BEGIN ([A-Z0-9 ]+)-----/g;
+const END_RE = /-----END ([A-Z0-9 ]+)-----/g;
 
-/** Every PEM block in the text, in order. Invalid base64 inside a block throws. */
+/** Where each END marker starts, by label, in text order (overlapping markers included). */
+function endMarkers(text: string): Map<string, number[]> {
+  const ends = new Map<string, number[]>();
+  const re = new RegExp(END_RE.source, 'g');
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const label = m[1] ?? '';
+    const list = ends.get(label) ?? [];
+    list.push(m.index);
+    ends.set(label, list);
+    re.lastIndex = m.index + 1;
+  }
+  return ends;
+}
+
+/**
+ * Every PEM block in the text, in order. Invalid base64 inside a block throws.
+ *
+ * A block runs from a BEGIN line to the first END line of the same label. The
+ * END markers are indexed once up front, so text with many BEGIN lines and no
+ * END stays linear (a single lazy regex is quadratic on it).
+ */
 export function pemBlocks(text: string): PemBlock[] {
+  const ends = endMarkers(text);
+  const cursor = new Map<string, number>();
   const blocks: PemBlock[] = [];
-  for (const match of text.matchAll(PEM_RE)) {
-    const label = match[1] ?? '';
-    const body = match[2] ?? '';
-    blocks.push({ label, der: base64ToBytes(body) });
+  const begin = new RegExp(BEGIN_RE.source, 'g');
+  let m: RegExpExecArray | null;
+  while ((m = begin.exec(text)) !== null) {
+    const label = m[1] ?? '';
+    const bodyStart = m.index + m[0].length;
+    const list = ends.get(label) ?? [];
+    // BEGIN lines are visited left to right, so each label's cursor only moves forward.
+    let i = cursor.get(label) ?? 0;
+    let end = list[i];
+    while (end !== undefined && end < bodyStart) {
+      i += 1;
+      end = list[i];
+    }
+    cursor.set(label, i);
+    if (end === undefined) {
+      begin.lastIndex = m.index + 1;
+      continue;
+    }
+    blocks.push({ label, der: base64ToBytes(text.slice(bodyStart, end)) });
+    begin.lastIndex = end + `-----END ${label}-----`.length;
   }
   return blocks;
 }
