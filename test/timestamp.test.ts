@@ -2,11 +2,22 @@ import { describe, expect, it } from 'vitest';
 import {
   BUILT_IN_TSA_ROOTS,
   bytesToBase64,
+  hexToBytes,
   parseTimestampToken,
   verifyTimestampImprint,
   verifyTimestampTrust,
 } from '../src/index.js';
+import { ContentInfo, SignedData } from '@peculiar/asn1-cms';
+import { AsnConvert } from '@peculiar/asn1-schema';
 import { facts, readBytes, readText } from './helpers.js';
+
+function indexOfBytes(haystack: Uint8Array, needle: Uint8Array): number {
+  outer: for (let i = 0; i + needle.length <= haystack.length; i += 1) {
+    for (let j = 0; j < needle.length; j += 1) if (haystack[i + j] !== needle[j]) continue outer;
+    return i;
+  }
+  return -1;
+}
 
 const synthetic = readBytes('synthetic.tsr');
 const real = readBytes('real-freetsa.tsr');
@@ -125,12 +136,98 @@ describe('verifyTimestampTrust', () => {
     const res = await verifyTimestampTrust({ token: tampered, roots: [testRoot] });
     expect(res.ok).toBe(false);
   });
-  it('rejects a token whose signed content was altered', async () => {
-    // Flip one byte inside the encapsulated TSTInfo (after the header, before the signature).
+  it('rejects a token whose signed content (TSTInfo) was altered', async () => {
+    // Locate the encapsulated TSTInfo inside the token and flip one byte in
+    // the middle of it, so the failure is the messageDigest attribute, not
+    // a broken certificate.
+    const signedData = AsnConvert.parse(
+      AsnConvert.parse(synthetic, ContentInfo).content,
+      SignedData,
+    );
+    const tstDer = new Uint8Array(signedData.encapContentInfo.eContent?.single?.buffer ?? []);
+    expect(tstDer.length).toBeGreaterThan(0);
+    const start = indexOfBytes(synthetic, tstDer);
+    expect(start).toBeGreaterThan(0);
+    // Flip inside the imprint value: the structure stays valid, so the
+    // failure must come from the signed messageDigest attribute.
+    const imprintAt = indexOfBytes(tstDer, hexToBytes(facts.sampleHash));
+    expect(imprintAt).toBeGreaterThan(0);
     const tampered = new Uint8Array(synthetic);
-    const idx = Math.floor(tampered.length / 3);
+    const idx = start + imprintAt + 5;
     tampered[idx] = (tampered[idx] ?? 0) ^ 0x01;
+    expect(() => parseTimestampToken(tampered)).not.toThrow();
     const res = await verifyTimestampTrust({ token: tampered, roots: [testRoot] });
     expect(res.ok).toBe(false);
+    expect(res.reason).toMatch(/digest/i);
+  });
+});
+
+describe('parseTimestampToken — malformed variants fail closed', () => {
+  it('rejects a token whose signed attributes lack content-type', () => {
+    expect(() => parseTimestampToken(readBytes('synthetic-no-content-type.tsr'))).toThrow(
+      'lack content-type',
+    );
+  });
+  it('rejects a token whose content-type attribute names id-data', () => {
+    expect(() => parseTimestampToken(readBytes('synthetic-wrong-content-type.tsr'))).toThrow(
+      'does not name id-ct-TSTInfo',
+    );
+  });
+  it('rejects a constructed (BER) encapsulated content', () => {
+    expect(() => parseTimestampToken(readBytes('synthetic-constructed.tsr'))).toThrow(
+      'no encapsulated TSTInfo content',
+    );
+  });
+  it('rejects a plain id-data CMS that merely carries TSTInfo bytes', () => {
+    expect(() => parseTimestampToken(readBytes('synthetic-id-data.tsr'))).toThrow(
+      'is not id-ct-TSTInfo',
+    );
+  });
+  it('reports each of them as an invalid imprint and an untrusted token', async () => {
+    for (const name of [
+      'synthetic-no-content-type.tsr',
+      'synthetic-wrong-content-type.tsr',
+      'synthetic-constructed.tsr',
+      'synthetic-id-data.tsr',
+    ]) {
+      const token = readBytes(name);
+      expect((await verifyTimestampImprint({ token, digest: facts.sampleHash })).ok, name).toBe(
+        false,
+      );
+      expect((await verifyTimestampTrust({ token, roots: [testRoot] })).ok, name).toBe(false);
+    }
+  });
+});
+
+describe('verifyTimestampTrust — chain anchoring', () => {
+  it('ignores a self-signed root embedded in the token', async () => {
+    // The unrelated TSA ships its own root inside the token; only roots the
+    // caller supplies may anchor a chain.
+    const token = readBytes('synthetic-untrusted-with-root.tsr');
+    expect((await verifyTimestampTrust({ token, roots: [testRoot] })).ok).toBe(false);
+    expect((await verifyTimestampTrust({ token, roots: builtIn })).ok).toBe(false);
+    const anchored = await verifyTimestampTrust({
+      token,
+      roots: [readText('tsa-unrelated-root.pem')],
+    });
+    expect(anchored.ok).toBe(true);
+    expect(anchored.pathLength).toBe(2);
+  });
+  it('validates a real DigiCert token (RSA-4096 signer, three-certificate chain) against the shipped root', async () => {
+    // The token embeds a cross-signed copy of "DigiCert Trusted Root G4"
+    // (same key, issued by another DigiCert root); the chain must still end
+    // at the self-signed copy shipped with the package.
+    const token = readBytes('real-digicert.tsr');
+    const imprint = await verifyTimestampImprint({ token, digest: facts.sampleHash });
+    expect(imprint.ok).toBe(true);
+    const trust = await verifyTimestampTrust({ token, roots: builtIn });
+    expect(trust.ok, trust.reason).toBe(true);
+    expect(trust.signer).toContain('DigiCert');
+    expect(trust.pathLength).toBe(3);
+    const onlyFreeTsa = await verifyTimestampTrust({
+      token,
+      roots: [BUILT_IN_TSA_ROOTS.find((r) => r.name === 'freetsa-root')?.pem ?? ''],
+    });
+    expect(onlyFreeTsa.ok).toBe(false);
   });
 });

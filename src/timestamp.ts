@@ -139,19 +139,65 @@ export interface TrustResult {
   reason?: string;
 }
 
-function rootsToCertificates(roots: (string | Uint8Array)[]): pkijs.Certificate[] {
+/**
+ * Parses trust anchors: PEM text (every CERTIFICATE block in it) or one DER
+ * certificate per Uint8Array. Throws on the first certificate that does not
+ * parse, so a mistyped root file is a loud caller error rather than a silently
+ * smaller trust set.
+ */
+export function parseRootCertificates(
+  roots: readonly (string | Uint8Array)[],
+): pkijs.Certificate[] {
   const certs: pkijs.Certificate[] = [];
-  for (const root of roots) {
-    if (typeof root === 'string') {
-      for (const block of pemBlocks(root)) {
-        if (block.label !== 'CERTIFICATE') continue;
-        certs.push(pkijs.Certificate.fromBER(toArrayBuffer(block.der)));
+  roots.forEach((root, index) => {
+    try {
+      if (typeof root === 'string') {
+        for (const block of pemBlocks(root)) {
+          if (block.label !== 'CERTIFICATE') continue;
+          certs.push(pkijs.Certificate.fromBER(toArrayBuffer(block.der)));
+        }
+      } else {
+        certs.push(pkijs.Certificate.fromBER(toArrayBuffer(root)));
       }
-    } else {
-      certs.push(pkijs.Certificate.fromBER(toArrayBuffer(root)));
+    } catch (error) {
+      throw new Error(`root certificate ${index} does not parse: ${messageOf(error)}`, {
+        cause: error,
+      });
     }
-  }
+  });
   return certs;
+}
+
+function spkiDer(cert: pkijs.Certificate): Uint8Array {
+  return new Uint8Array(cert.subjectPublicKeyInfo.toSchema().toBER(false));
+}
+
+/**
+ * Removes from the token's certificate pool every certificate that has the
+ * same subject and the same public key as a trusted root.
+ *
+ * Public TSAs embed a *cross-signed* copy of their root (DigiCert does: a
+ * "Trusted Root G4" issued by DigiCert Global Root CA, same key, different
+ * serial). pkijs picks that copy as the intermediate's issuer because it
+ * matches by name and key, follows it to a CA nobody supplied, and reports
+ * "no valid certificate paths" although the genuine, self-signed root was in
+ * `trustedCerts` all along. With the shadow removed the chain ends at the
+ * trusted copy, whose key is the same, so nothing is trusted that was not
+ * trusted before: a certificate with a trusted root's name but another key is
+ * kept and simply fails to anchor.
+ */
+function dropShadowedRoots(
+  pool: NonNullable<pkijs.SignedData['certificates']>,
+  trustedCerts: pkijs.Certificate[],
+): NonNullable<pkijs.SignedData['certificates']> {
+  const trusted = trustedCerts.map((cert) => ({ subject: cert.subject, spki: spkiDer(cert) }));
+  return pool.filter((candidate) => {
+    if (!(candidate instanceof pkijs.Certificate)) return true;
+    const spki = spkiDer(candidate);
+    return !trusted.some(
+      (root) => root.subject.isEqual(candidate.subject) && constantTimeEqual(root.spki, spki),
+    );
+  });
 }
 
 function subjectString(cert: pkijs.Certificate): string {
@@ -160,17 +206,39 @@ function subjectString(cert: pkijs.Certificate): string {
     .join(', ');
 }
 
-function hasTimeStampingEku(cert: pkijs.Certificate): boolean {
+/**
+ * RFC 3161 §2.3: the signer certificate MUST carry the extended key usage
+ * extension, marked critical, with id-kp-timeStamping as its only purpose.
+ * Both public TSAs this package ships roots for (DigiCert, FreeTSA) comply.
+ */
+function hasStrictTimeStampingEku(cert: pkijs.Certificate): string | null {
   const ext = cert.extensions?.find((e) => e.extnID === EXT_KEY_USAGE_OID);
   const parsed: unknown = ext?.parsedValue;
-  if (!(parsed instanceof pkijs.ExtKeyUsage)) return false;
-  return parsed.keyPurposes.includes(TIMESTAMPING_EKU_OID);
+  if (!ext || !(parsed instanceof pkijs.ExtKeyUsage)) {
+    return 'timestamp signer certificate lacks the timeStamping extended key usage extension';
+  }
+  if (!parsed.keyPurposes.includes(TIMESTAMPING_EKU_OID)) {
+    return 'timestamp signer certificate lacks the timeStamping extended key usage';
+  }
+  if (parsed.keyPurposes.length !== 1) {
+    return 'timestamp signer certificate lists purposes other than timeStamping (RFC 3161 §2.3)';
+  }
+  if (!ext.critical) {
+    return 'timestamp signer certificate does not mark its extended key usage critical (RFC 3161 §2.3)';
+  }
+  return null;
 }
 
 /**
  * Optional check: the CMS signature over the signed attributes verifies with
  * the signer certificate found by `sid`, that certificate carries the
- * timeStamping EKU, was valid at `genTime`, and chains to one of `roots`.
+ * timeStamping EKU (critical, sole purpose), was valid at `genTime`, and
+ * chains to one of `roots`. No revocation data is consulted: offline
+ * verification has no CRL or OCSP, so a signer revoked after `genTime` still
+ * verifies (see docs/threat-model.md).
+ *
+ * This check alone does not tie the token to any document: pair it with
+ * {@link verifyTimestampImprint}, as {@link verifySealedPdf} does.
  */
 export async function verifyTimestampTrust(input: TrustInput): Promise<TrustResult> {
   let parsed: ParsedTimestampToken;
@@ -181,7 +249,7 @@ export async function verifyTimestampTrust(input: TrustInput): Promise<TrustResu
   }
   let trustedCerts: pkijs.Certificate[];
   try {
-    trustedCerts = rootsToCertificates(input.roots);
+    trustedCerts = parseRootCertificates(input.roots);
   } catch (error) {
     return { ok: false, signer: null, pathLength: 0, reason: `roots: ${messageOf(error)}` };
   }
@@ -201,12 +269,29 @@ export async function verifyTimestampTrust(input: TrustInput): Promise<TrustResu
   } catch (error) {
     return { ok: false, signer: null, pathLength: 0, reason: `token: ${messageOf(error)}` };
   }
+  if (signedData.certificates)
+    signedData.certificates = dropShadowedRoots(signedData.certificates, trustedCerts);
 
-  // The TSTInfo imprint is checked separately against the digest we hold
-  // (verifyTimestampImprint); the content type is already enforced by
-  // parseTimestampToken. Presenting the content as id-data here lets the CMS
-  // engine verify messageDigest + signature + chain without needing the
-  // original document bytes, which a digest-only caller does not have.
+  // Relabel the encapsulated content as id-data before calling pkijs.
+  //
+  // pkijs's TSTInfo branch (SignedData.verify, eContentType === id-ct-TSTInfo)
+  // insists on receiving the original `data` so it can hash it and compare it
+  // with the imprint, and would also set checkDate from genTime and extract the
+  // serial. A digest-only verifier does not hold the document bytes, so that
+  // branch is skipped on purpose and each of its duties is covered elsewhere:
+  //   - imprint vs digest: verifyTimestampImprint, which every caller of this
+  //     function in this package runs first (this function alone does NOT bind
+  //     the token to any digest; a valid token for another digest passes);
+  //   - checkDate = genTime: passed explicitly below;
+  //   - content-type signed attribute naming id-ct-TSTInfo: enforced in
+  //     parseTimestampToken. pkijs never compares that attribute with
+  //     eContentType in either branch, so that local check is load-bearing.
+  // What pkijs still verifies after the relabel: signer located by sid, chain
+  // anchored only on trustedCerts (an embedded self-signed root does not
+  // anchor), validity of every path certificate at checkDate, cA / keyUsage on
+  // intermediates, each hop's signature, messageDigest attribute vs the
+  // encapsulated bytes, and the signature over the re-encoded signed
+  // attributes (so BER / non-canonical signed attributes fail closed).
   signedData.encapContentInfo.eContentType = id_data;
 
   let result: pkijs.SignedDataVerifyResult;
@@ -235,14 +320,13 @@ export async function verifyTimestampTrust(input: TrustInput): Promise<TrustResu
   if (!signerCert) {
     return { ok: false, signer, pathLength, reason: 'timestamp signer certificate not found' };
   }
-  if (!hasTimeStampingEku(signerCert)) {
-    return {
-      ok: false,
-      signer,
-      pathLength,
-      reason: 'timestamp signer certificate lacks the timeStamping extended key usage',
-    };
+  const ekuProblem = hasStrictTimeStampingEku(signerCert);
+  if (ekuProblem !== null) {
+    return { ok: false, signer, pathLength, reason: ekuProblem };
   }
+  // Defence in depth: pkijs already rejected any path certificate that was not
+  // valid at checkDate (genTime) above, so this branch is normally unreachable.
+  // It stays so the validity rule does not silently depend on pkijs internals.
   const notBefore = signerCert.notBefore.value;
   const notAfter = signerCert.notAfter.value;
   if (parsed.genTime < notBefore || parsed.genTime > notAfter) {

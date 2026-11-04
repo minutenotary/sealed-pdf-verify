@@ -6,7 +6,7 @@ import type { LedgerBlock, ProofV1 } from './types.js';
 const hex64 = z.string().regex(/^[0-9a-fA-F]{64}$/, 'expected 64 hex characters');
 
 const ledgerSchema = z.object({
-  seq: z.number().int().nonnegative(),
+  seq: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   previousEntryHash: hex64,
   entryHash: hex64,
 });

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as pkijs from 'pkijs';
@@ -25,6 +26,20 @@ describe('built-in TSA roots', () => {
           .replace(/\r\n/g, '\n')
           .trim() + '\n';
       expect(root.pem).toBe(onDisk);
+    }
+  });
+  it('are exactly the certificates the CAs publish (SHA-256 of the DER)', () => {
+    // DigiCert publishes this thumbprint on its root page; FreeTSA's matches
+    // https://freetsa.org/files/cacert.pem. A root that drifts from these
+    // values is a different trust anchor and must not ship unnoticed.
+    const pinned: Record<string, string> = {
+      'digicert-trusted-root-g4':
+        '552f7bdcf1a7af9e6ce672017f4f12abf77240c78e761ac203d1d9d20ac89988',
+      'freetsa-root': 'a6379e7cecc05faa3cbf076013d745e327bbbaa38c0b9af22469d4701d18aabc',
+    };
+    for (const root of BUILT_IN_TSA_ROOTS) {
+      const der = pemBlocks(root.pem)[0]?.der ?? new Uint8Array();
+      expect(createHash('sha256').update(der).digest('hex'), root.name).toBe(pinned[root.name]);
     }
   });
   it('are self-signed CA certificates', () => {

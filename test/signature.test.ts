@@ -1,3 +1,4 @@
+import { createHash, generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   ACCEPTED_ALGORITHMS,
@@ -134,6 +135,34 @@ describe('verifySignature', () => {
       algorithm: sample.algorithm,
     });
     expect(res.ok).toBe(false);
+  });
+});
+
+describe('decodeSignature encoding choice', () => {
+  it('reads a 64-byte P1363 signature whose r starts with 0x30 as P1363, not DER', async () => {
+    // About one P1363 signature in 256 begins with the DER SEQUENCE tag; it
+    // must still verify (a genuine document is at stake).
+    const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    const pem = publicKey.export({ type: 'spki', format: 'pem' });
+    let attempt = 0;
+    let signature: Buffer;
+    let digest: string;
+    do {
+      const message = Buffer.from(`attempt ${attempt}`);
+      digest = createHash('sha256').update(message).digest('hex');
+      signature = nodeSign('sha256', message, { key: privateKey, dsaEncoding: 'ieee-p1363' });
+      attempt += 1;
+    } while (signature[0] !== 0x30 && attempt < 20_000);
+    expect(signature[0]).toBe(0x30);
+    expect(decodeSignature(new Uint8Array(signature)).encoding).toBe('p1363');
+    const res = await verifySignature({
+      digest,
+      signature: bytesToBase64(new Uint8Array(signature)),
+      publicKey: pem,
+      algorithm: ACCEPTED_ALGORITHMS[0] ?? '',
+    });
+    expect(res.ok, res.reason).toBe(true);
+    expect(res.encoding).toBe('p1363');
   });
 });
 

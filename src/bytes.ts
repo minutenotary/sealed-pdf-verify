@@ -27,7 +27,13 @@ export function bytesToHex(bytes: Uint8Array): string {
   return out;
 }
 
-/** Strict standard base64 (RFC 4648 §4). Whitespace is tolerated, nothing else. */
+/**
+ * Standard base64 alphabet only (RFC 4648 §4): `+`, `/`, optional `=` padding.
+ * Whitespace is stripped and missing padding is tolerated, because proofs are
+ * sometimes re-serialised by tools that drop it. Non-canonical trailing bits
+ * are accepted as `atob` accepts them; that cannot make a bad signature or
+ * token pass, since the decoded bytes still have to verify.
+ */
 export function base64ToBytes(text: string): Uint8Array {
   const compact = text.replace(/\s+/g, '');
   if (!BASE64_RE.test(compact)) throw new Error('invalid base64');

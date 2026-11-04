@@ -9,6 +9,9 @@ export default defineConfig({
   base: './',
   plugins: [viteSingleFile()],
   build: {
+    // No modulepreload polyfill: it is dead code in a single-file build and
+    // its `fetch(` would contradict the page's no-network promise.
+    modulePreload: { polyfill: false },
     outDir: 'dist',
     emptyOutDir: true,
     target: 'es2022',

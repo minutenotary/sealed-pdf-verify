@@ -6,6 +6,7 @@ import {
   verifyLedgerSegment,
 } from '../src/index.js';
 import type { LedgerEntry } from '../src/index.js';
+import { claimsGenesis } from '../src/ledger.js';
 import { readJson } from './helpers.js';
 
 const segment = readJson('ledger-segment.json') as LedgerEntry[];
@@ -86,5 +87,32 @@ describe('verifyLedgerSegment', () => {
     const proper = { ...entry1, seq: 0 };
     proper.entryHash = await computeLedgerEntryHash(proper);
     expect((await verifyLedgerSegment([proper])).ok).toBe(true);
+  });
+});
+
+describe('genesis rule', () => {
+  it('accepts a zero link at seq 0 and 1 only', () => {
+    expect(claimsGenesis(0, GENESIS_PREVIOUS_HASH)).toBe(true);
+    expect(claimsGenesis(1, GENESIS_PREVIOUS_HASH.toUpperCase())).toBe(true);
+    expect(claimsGenesis(2, GENESIS_PREVIOUS_HASH)).toBe(false);
+    expect(claimsGenesis(1, 'a'.repeat(64))).toBe(false);
+  });
+  it('rejects a later entry that claims to be a genesis entry', async () => {
+    const forged = { seq: 7, previousEntryHash: GENESIS_PREVIOUS_HASH, entryHash: '' };
+    forged.entryHash = await computeLedgerEntryHash({
+      seq: 7,
+      documentHash: entry1.documentHash,
+      previousEntryHash: GENESIS_PREVIOUS_HASH,
+      sealedAt: entry1.sealedAt,
+    });
+    const single = await verifyLedgerEntry(forged, entry1.documentHash, entry1.sealedAt);
+    expect(single.ok).toBe(false);
+    expect(single.reason).toContain('genesis');
+    const segment = await verifyLedgerSegment([{ ...entry1, ...forged }]);
+    expect(segment.ok).toBe(false);
+    expect(segment.reason).toContain('genesis');
+  });
+  it('refuses a seq that would not print as a decimal integer', async () => {
+    await expect(computeLedgerEntryHash({ ...entry1, seq: 1e21 })).rejects.toThrow('safe integer');
   });
 });

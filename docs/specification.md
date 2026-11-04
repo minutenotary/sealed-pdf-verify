@@ -25,7 +25,7 @@ Compare case-insensitively and in constant time.
   "timestampedAt": "ISO-8601 or null",
   "ledger": { "seq": 123, "previousEntryHash": "64 hex", "entryHash": "64 hex" },
   "verifyUrl": "https://minutenotary.ca/verify/<sealId>",
-  "sealedAt": "ISO-8601, Date#toISOString() form (2026-11-04T15:04:05.000Z)"
+  "sealedAt": "ISO-8601 UTC with the Z suffix, fractional seconds optional (2026-11-04T15:04:05.000Z); offsets such as +00:00 are rejected"
 }
 ```
 
@@ -77,8 +77,9 @@ CMS `SignerInfo` signature over the signed attributes (the `messageDigest`
 attribute must equal the digest of `eContent` under the signer's
 `digestAlgorithm`; the `content-type` attribute must name id-ct-TSTInfo);
 locate the signer certificate in `SignedData.certificates` by `sid`
-(issuerAndSerialNumber or subjectKeyIdentifier); require the timeStamping
-EKU (`1.3.6.1.5.5.7.3.8`); require validity at `genTime`; build a chain to a
+(issuerAndSerialNumber or subjectKeyIdentifier); require the extended key
+usage extension to be critical and to contain only id-kp-timeStamping
+(`1.3.6.1.5.5.7.3.8`, RFC 3161 §2.3); require validity at `genTime`; build a chain to a
 trusted root. Shipped roots: DigiCert Trusted Root G4 and the FreeTSA root;
 callers may add roots.
 
@@ -95,8 +96,11 @@ entryHash = sha256_hex( "<seq>" + "\n" + "<documentHash>" + "\n" + "<previousEnt
 ```
 
 UTF-8, `\n` = LF (0x0A), `seq` as a decimal integer, hashes lowercase hex,
-`sealedAt` exactly the ISO-8601 string carried by the proof. The genesis
-entry has `previousEntryHash` = 64 zeros.
+`sealedAt` exactly the ISO-8601 string carried by the proof; `seq` is a safe
+integer (below 2^53) printed in decimal. The first entry of a chain has
+`previousEntryHash` = 64 zeros; whether it is numbered 0 or 1 is the issuer's
+choice, so a verifier accepts the zero link at seq 0 and 1 and rejects it from
+seq 2 on.
 
 Required check: recompute from `ledger.seq`, `documentHash`,
 `ledger.previousEntryHash`, `sealedAt` and compare with `ledger.entryHash` →
@@ -134,7 +138,14 @@ checks: {
   timestamp: "trusted" | "imprint_only" | "none" | "invalid",
   ledger:    "consistent" | "inconsistent" | "not_checked"
 }
-facts: { sealId, documentHash, fingerprint, sealedAt, timestampTime (genTime) | null, tsaUrl | null, verifyUrl, algorithm }
+facts: {
+  sealId, documentHash,
+  computedHash | null,          // SHA-256 of the supplied PDF; null in proof-only mode
+  fingerprint | null,           // SHA-256 of the key's SPKI DER; null when the key did not parse
+  sealedAt, timestampTime (genTime) | null, tsaUrl | null,
+  verifyUrl | null,             // opaque text: render as a link only when it is https
+  algorithm, keyId | null, keyVersion | null
+}
 ```
 
 `genuine` = hash is `match` (or `not_checked` in proof-only mode) AND

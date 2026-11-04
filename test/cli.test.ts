@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   EXIT_ALTERED,
@@ -6,9 +9,10 @@ import {
   formatEvidence,
   formatVerdict,
   runCli,
+  sanitizeForTerminal,
 } from '../cli/main.js';
-import type { EvidenceResult, Verdict } from '../src/index.js';
-import { fx } from './helpers.js';
+import type { EvidenceResult, ProofV1, Verdict } from '../src/index.js';
+import { fx, readProof } from './helpers.js';
 
 interface Run {
   code: number;
@@ -60,8 +64,10 @@ describe('cli', () => {
     const rejected = await run(pdf, '--proof', proof, '--trust', fx('trust-other.json'));
     expect(rejected.code).toBe(EXIT_ALTERED);
     expect(rejected.out).toMatch(/key\s+rejected/);
+    // An empty trust file is an unfilled template, not a document problem.
     const empty = await run(pdf, '--proof', proof, '--trust', fx('trust-empty.json'));
-    expect(empty.code).toBe(EXIT_ALTERED);
+    expect(empty.code).toBe(EXIT_INCOMPLETE);
+    expect(empty.err).toContain('empty');
     const bad = await run(pdf, '--proof', proof, '--trust', fx('trust-bad.json'));
     expect(bad.code).toBe(EXIT_INCOMPLETE);
     expect(bad.err).toContain('fingerprints');
@@ -91,8 +97,42 @@ describe('cli', () => {
     const imprintOnly = await run(pdf, '--proof', synthetic, '--no-tsa-trust');
     expect(imprintOnly.code).toBe(EXIT_GENUINE);
     expect(imprintOnly.out).toMatch(/timestamp\s+imprint_only/);
+    // No root left to trust is a usage error, not an "imprint only" verdict.
     const noBuiltin = await run(pdf, '--proof', proof, '--no-builtin-roots');
-    expect(noBuiltin.out).toMatch(/timestamp\s+imprint_only/);
+    expect(noBuiltin.code).toBe(EXIT_INCOMPLETE);
+    expect(noBuiltin.err).toContain('--no-builtin-roots');
+    const explicit = await run(pdf, '--proof', proof, '--no-builtin-roots', '--no-tsa-trust');
+    expect(explicit.code).toBe(EXIT_GENUINE);
+    expect(explicit.out).toMatch(/timestamp\s+imprint_only/);
+    const notPem = await run(pdf, '--proof', synthetic, '--tsa-roots', fx('trust-bad.json'));
+    expect(notPem.code).toBe(EXIT_INCOMPLETE);
+    expect(notPem.err).toContain('CERTIFICATE');
+    const missing = await run(pdf, '--proof', synthetic, '--tsa-roots', fx('missing.pem'));
+    expect(missing.code).toBe(EXIT_INCOMPLETE);
+  });
+  it('prints its version', async () => {
+    const r = await run('--version');
+    expect(r.code).toBe(EXIT_GENUINE);
+    expect(r.out).toMatch(/^sealed-pdf-verify \S+$/);
+  });
+  it('strips terminal control characters from proof-derived text', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'spv-'));
+    const crafted: ProofV1 = {
+      ...readProof('sample.proof.json'),
+      sealId: 'X\u001b[3A\u001b[2KVerdict: GENUINE\n\u001b[3B',
+      keyId: 'k\r\u0007',
+    };
+    const path = join(dir, 'crafted.proof.json');
+    writeFileSync(path, JSON.stringify(crafted));
+    const r = await run(fx('tampered.pdf'), '--proof', path);
+    expect(r.code).toBe(EXIT_ALTERED);
+    // eslint-disable-next-line no-control-regex -- the test is about control characters
+    expect(r.out).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
+    expect(r.out.split('\n').filter((l) => l.startsWith('Verdict:'))).toEqual(['Verdict: ALTERED']);
+    // JSON output keeps the raw value, escaped by JSON itself.
+    const j = await run(fx('tampered.pdf'), '--proof', path, '--json');
+    expect((JSON.parse(j.out) as Verdict).facts?.sealId).toBe(crafted.sealId);
+    expect(sanitizeForTerminal('a\tb\u001bc')).toBe('a\tbc');
   });
   it('verifies an evidence archive', async () => {
     const r = await run(fx('evidence.zip'));
@@ -103,6 +143,19 @@ describe('cli', () => {
     const json = await run(fx('evidence.zip'), '--json');
     const parsed = JSON.parse(json.out) as EvidenceResult;
     expect(parsed.documents).toHaveLength(2);
+    // Key pinning applies to every document in the archive.
+    const pinned = await run(fx('evidence.zip'), '--trust', fx('trust-pinned.json'));
+    expect(pinned.code).toBe(EXIT_GENUINE);
+    const rejected = await run(fx('evidence.zip'), '--trust', fx('trust-other.json'));
+    expect(rejected.code).toBe(EXIT_ALTERED);
+    // An archive is recognised by its bytes and never takes --proof.
+    const withProof = await run(fx('evidence.zip'), '--proof', proof);
+    expect(withProof.code).toBe(EXIT_INCOMPLETE);
+    expect(withProof.err).toContain('does not take --proof');
+    const dir = mkdtempSync(join(tmpdir(), 'spv-'));
+    const fake = join(dir, 'fake.zip');
+    writeFileSync(fake, 'not an archive');
+    expect((await run(fake)).err).toContain('not a ZIP archive');
   });
   it('returns 2 for usage errors and missing files', async () => {
     expect((await run(pdf)).code).toBe(EXIT_INCOMPLETE);
@@ -117,6 +170,12 @@ describe('cli', () => {
     expect(r.code).toBe(EXIT_INCOMPLETE);
     expect(r.out).toContain('Verdict: INCOMPLETE');
     expect(r.out).toContain('error:');
+    const j = await run(pdf, '--proof', fx('trust-bad.json'), '--json');
+    expect(j.code).toBe(EXIT_INCOMPLETE);
+    const v = JSON.parse(j.out) as Verdict;
+    expect(v.overall).toBe('incomplete');
+    expect(v.facts).toBeNull();
+    expect(v.error).toBeDefined();
   });
 });
 

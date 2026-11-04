@@ -6,7 +6,7 @@ export default defineConfig({
     testTimeout: 20_000,
     coverage: {
       provider: 'v8',
-      include: ['src', 'cli'],
+      include: ['src', 'cli', 'web/src/render.ts'],
       reporter: ['text', 'lcov'],
       thresholds: {
         lines: 90,

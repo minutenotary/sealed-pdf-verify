@@ -30,5 +30,9 @@ npx sealed-pdf-verify document.pdf --proof document.proof.json --trust issuers.j
 ```
 
 With a trust list the key check is `pinned` or `rejected`; `rejected` makes
-the verdict `altered`. An empty trust list rejects every key on purpose: you
-asked for pinning and nothing is trusted.
+the verdict `altered`. In the library an empty `trustedKeyFingerprints` list
+rejects every key on purpose (you asked for pinning and nothing is trusted);
+the CLI refuses an empty `--trust` file with exit status 2 instead, because
+from the command line it can only be an unfilled template. A fingerprint that
+is not 64 hex characters is a caller error: the library throws `TypeError`,
+the CLI exits 2.

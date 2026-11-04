@@ -17,8 +17,10 @@ export interface LedgerEntryInput {
  * UTF-8, LF separators, seq as a decimal integer, hashes lowercase hex.
  */
 export async function computeLedgerEntryHash(entry: LedgerEntryInput): Promise<string> {
-  if (!Number.isInteger(entry.seq) || entry.seq < 0)
-    throw new Error('seq must be a non-negative integer');
+  // Number.isSafeInteger: above 2^53 String(seq) would print exponent form
+  // ("1e+21"), which is not the decimal integer the chain is defined over.
+  if (!Number.isSafeInteger(entry.seq) || entry.seq < 0)
+    throw new Error('seq must be a non-negative safe integer');
   if (!isHex(entry.documentHash, 32)) throw new Error('documentHash must be 64 hex characters');
   if (!isHex(entry.previousEntryHash, 32))
     throw new Error('previousEntryHash must be 64 hex characters');
@@ -37,12 +39,29 @@ export interface LedgerEntryResult {
   reason?: string;
 }
 
+/**
+ * The first entry of a chain links to {@link GENESIS_PREVIOUS_HASH}. Whether
+ * an issuer numbers that entry 0 or 1 is not fixed by the format (the fixtures
+ * start at 1), so a zero link is accepted at seq 0 and 1 and rejected from
+ * seq 2 on, where it can only mean a forged "fresh start".
+ */
+export function claimsGenesis(seq: number, previousEntryHash: string): boolean {
+  return previousEntryHash.toLowerCase() === GENESIS_PREVIOUS_HASH && seq <= 1;
+}
+
 /** Recomputes a proof's ledger block from the proof's own fields and compares. */
 export async function verifyLedgerEntry(
   block: LedgerBlock,
   documentHash: string,
   sealedAt: string,
 ): Promise<LedgerEntryResult> {
+  if (block.previousEntryHash.toLowerCase() === GENESIS_PREVIOUS_HASH && block.seq > 1) {
+    return {
+      ok: false,
+      expectedEntryHash: null,
+      reason: `entry #${block.seq} links to the genesis value; only the first entry may`,
+    };
+  }
   let expected: string;
   try {
     expected = await computeLedgerEntryHash({
@@ -91,7 +110,11 @@ export async function verifyLedgerSegment(entries: LedgerEntry[]): Promise<Ledge
   let previous: LedgerEntry | undefined;
   for (const entry of entries) {
     const own = await verifyLedgerEntry(entry, entry.documentHash, entry.sealedAt);
-    if (!own.ok) return { ok: false, count: entries.length, ...range, reason: own.reason };
+    if (!own.ok) {
+      const failed: LedgerSegmentResult = { ok: false, count: entries.length, ...range };
+      if (own.reason !== undefined) failed.reason = own.reason;
+      return failed;
+    }
     if (previous) {
       if (entry.seq !== previous.seq + 1) {
         return {
@@ -115,6 +138,16 @@ export async function verifyLedgerSegment(entries: LedgerEntry[]): Promise<Ledge
         count: entries.length,
         ...range,
         reason: 'genesis entry must link to 64 zeros',
+      };
+    } else if (
+      entry.previousEntryHash.toLowerCase() === GENESIS_PREVIOUS_HASH &&
+      !claimsGenesis(entry.seq, entry.previousEntryHash)
+    ) {
+      return {
+        ok: false,
+        count: entries.length,
+        ...range,
+        reason: `entry #${entry.seq} links to the genesis value; only the first entry may`,
       };
     }
     previous = entry;

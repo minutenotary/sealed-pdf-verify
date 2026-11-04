@@ -1,6 +1,7 @@
 import { unzipSync, zipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
 import { verifyEvidenceZip } from '../src/index.js';
+import { MAX_ENTRY_BYTES, classifyEntry } from '../src/evidence.js';
 import { readBytes, readText } from './helpers.js';
 
 const evidence = readBytes('evidence.zip');
@@ -140,5 +141,155 @@ describe('verifyEvidenceZip', () => {
     const r = await verifyEvidenceZip(rezip({ [SEAL1]: enc(JSON.stringify(seal)) }));
     expect(r.documents[0]?.overall).toBe('incomplete');
     expect(r.documents[0]?.reason).toContain('sealedAt');
+  });
+});
+
+/**
+ * A minimal ZIP writer (stored entries) whose central directory can lie about
+ * an entry's uncompressed size: the only way to exercise the inflation cap
+ * without actually allocating hundreds of megabytes.
+ */
+function storedZip(
+  entries: { name: string; data: Uint8Array; claimedSize?: number }[],
+): Uint8Array {
+  const chunks: Uint8Array[] = [];
+  const central: Uint8Array[] = [];
+  let offset = 0;
+  const u16 = (n: number): number[] => [n & 0xff, (n >> 8) & 0xff];
+  const u32 = (n: number): number[] => [
+    n & 0xff,
+    (n >> 8) & 0xff,
+    (n >> 16) & 0xff,
+    (n >>> 24) & 0xff,
+  ];
+  for (const { name, data, claimedSize } of entries) {
+    const nameBytes = new TextEncoder().encode(name);
+    const size = claimedSize ?? data.length;
+    const local = new Uint8Array([
+      0x50,
+      0x4b,
+      0x03,
+      0x04,
+      ...u16(20),
+      ...u16(0),
+      ...u16(0),
+      ...u16(0),
+      ...u16(0),
+      ...u32(0),
+      ...u32(data.length),
+      ...u32(size),
+      ...u16(nameBytes.length),
+      ...u16(0),
+      ...nameBytes,
+    ]);
+    chunks.push(local, data);
+    central.push(
+      new Uint8Array([
+        0x50,
+        0x4b,
+        0x01,
+        0x02,
+        ...u16(20),
+        ...u16(20),
+        ...u16(0),
+        ...u16(0),
+        ...u16(0),
+        ...u16(0),
+        ...u32(0),
+        ...u32(data.length),
+        ...u32(size),
+        ...u16(nameBytes.length),
+        ...u16(0),
+        ...u16(0),
+        ...u16(0),
+        ...u16(0),
+        ...u32(0),
+        ...u32(offset),
+        ...nameBytes,
+      ]),
+    );
+    offset += local.length + data.length;
+  }
+  const centralSize = central.reduce((n, c) => n + c.length, 0);
+  const end = new Uint8Array([
+    0x50,
+    0x4b,
+    0x05,
+    0x06,
+    ...u16(0),
+    ...u16(0),
+    ...u16(entries.length),
+    ...u16(entries.length),
+    ...u32(centralSize),
+    ...u32(offset),
+    ...u16(0),
+  ]);
+  const all = [...chunks, ...central, end];
+  const out = new Uint8Array(all.reduce((n, c) => n + c.length, 0));
+  let at = 0;
+  for (const c of all) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return out;
+}
+
+describe('verifyEvidenceZip — fail-closed edges', () => {
+  it('classifies entries: only the paths it reads are inflated, each within the cap', () => {
+    expect(classifyEntry('documents/a.pdf', 10)).toBe('inflate');
+    expect(classifyEntry('bundle/seals/x.json', 10)).toBe('inflate');
+    expect(classifyEntry('SEALS/X.JSON', 10)).toBe('inflate');
+    expect(classifyEntry('ledger/segment.json', 10)).toBe('inflate');
+    expect(classifyEntry('README.txt', 10)).toBe('inflate');
+    expect(classifyEntry('audit/booking-audit-log.json', 10)).toBe('skip');
+    expect(classifyEntry('__MACOSX/._x', 10)).toBe('skip');
+    expect(classifyEntry('documents/a.pdf', MAX_ENTRY_BYTES)).toBe('inflate');
+    expect(classifyEntry('documents/a.pdf', MAX_ENTRY_BYTES + 1)).toBe('too-large');
+  });
+  it('does not inflate an entry that claims to be larger than the cap', async () => {
+    const zip = storedZip([
+      { name: 'documents/bomb.pdf', data: enc('%PDF-tiny'), claimedSize: MAX_ENTRY_BYTES + 1 },
+      { name: 'README.txt', data: enc('hello') },
+    ]);
+    const res = await verifyEvidenceZip(zip);
+    expect(res.overall).toBe('incomplete');
+    expect(res.documents).toHaveLength(0);
+    expect(res.readme).toBe('hello');
+    expect(res.notes.some((n) => n.includes('bomb.pdf') && n.includes('not inflated'))).toBe(true);
+  });
+  it('reads seal files whatever their case', async () => {
+    const res = await verifyEvidenceZip(
+      rezip({ [SEAL1]: null, 'seals/SPV-TEST-000001.JSON': base[SEAL1] ?? new Uint8Array() }),
+    );
+    expect(res.sealCount).toBe(2);
+    expect(res.documents.find((d) => d.path.endsWith('sample.pdf'))?.overall).toBe('genuine');
+  });
+  it('reports a document as incomplete, not a crash, when its key file is not UTF-8', async () => {
+    const seal = JSON.parse(new TextDecoder().decode(base[SEAL1])) as Record<string, unknown>;
+    delete seal.publicKeyPem;
+    const res = await verifyEvidenceZip(
+      rezip({
+        [SEAL1]: enc(JSON.stringify(seal)),
+        'seals/SPV-TEST-000001.public-key.pem': new Uint8Array([0xff, 0xfe, 0xc0]),
+      }),
+    );
+    const doc = res.documents.find((d) => d.path.endsWith('sample.pdf'));
+    expect(doc?.overall).toBe('incomplete');
+    expect(doc?.verdict).toBeNull();
+    expect(doc?.reason).toContain('could not be assembled');
+    expect(res.overall).toBe('incomplete');
+  });
+  it('notes a seal that matches no document', async () => {
+    const res = await verifyEvidenceZip(rezip({ 'documents/second.pdf': null }));
+    expect(res.documents).toHaveLength(1);
+    expect(res.overall).toBe('genuine');
+    expect(res.notes.some((n) => n.includes(SEAL2) && n.includes('matches no document'))).toBe(
+      true,
+    );
+  });
+  it('throws on invalid options before touching any document', async () => {
+    await expect(verifyEvidenceZip(evidence, { trustedKeyFingerprints: ['nope'] })).rejects.toThrow(
+      TypeError,
+    );
   });
 });

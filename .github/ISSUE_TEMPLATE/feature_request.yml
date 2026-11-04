@@ -1,0 +1,16 @@
+name: Feature request
+description: A check, input format or integration you need
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What you need and why
+      description: Describe the situation (for example "our TSA root is not shipped", "we need a Python verifier").
+    validations:
+      required: true
+  - type: textarea
+    id: spec
+    attributes:
+      label: Does it change the proof format?
+      description: Format changes need a new `schemaVersion`; say so if yours does.

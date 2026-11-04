@@ -13,67 +13,133 @@
     <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body>
-    <main class="page">
-      <header class="hero">
-        <h1>Sealed PDF Verifier</h1>
-        <p class="lead">
-          Checks a sealed PDF against the proof file delivered with it. Everything runs in this
-          browser tab: the PDF never leaves your device.
-        </p>
-      </header>
+    <!-- Shown while a file is dragged anywhere over the page; the whole page is a drop target. -->
+    <div class="drop-overlay" aria-hidden="true">
+      <p class="drop-overlay-text">Drop to verify</p>
+    </div>
 
-      <section class="inputs" aria-labelledby="inputs-title">
-        <h2 id="inputs-title" class="visually-hidden">Files</h2>
-        <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="Drop files here">
-          <p class="dropzone-title">Drop the PDF and its proof JSON here</p>
-          <p class="dropzone-hint">or an evidence ZIP, or use the pickers below</p>
+    <header class="topbar">
+      <p class="wordmark">Sealed PDF Verifier</p>
+      <p class="topbar-note">Runs in this tab. Nothing is uploaded.</p>
+    </header>
+
+    <main class="page">
+      <section class="intro">
+        <h1>Check a sealed PDF</h1>
+        <p class="lead">
+          Drop the PDF together with the proof file you received with it. The page recomputes the
+          document's hash and checks the signature, the signing key, the timestamp and the ledger
+          entry.
+        </p>
+      </section>
+
+      <section class="intake" aria-labelledby="intake-title">
+        <h2 id="intake-title" class="visually-hidden">Files to check</h2>
+
+        <div id="dropzone" class="dropzone">
+          <div class="slots">
+            <div class="slot" data-slot="pdf">
+              <button type="button" class="slot-pick" aria-describedby="slot-pdf-name">
+                <span class="slot-kind">Sealed PDF</span>
+                <span class="slot-name" id="slot-pdf-name">Choose a file</span>
+                <span class="slot-meta">.pdf</span>
+              </button>
+              <button type="button" class="slot-remove" aria-label="Remove the PDF" hidden>
+                &#x2715;
+              </button>
+              <input
+                type="file"
+                accept="application/pdf,.pdf"
+                class="visually-hidden"
+                tabindex="-1"
+              />
+            </div>
+
+            <div class="slot" data-slot="proof">
+              <button type="button" class="slot-pick" aria-describedby="slot-proof-name">
+                <span class="slot-kind">Proof file</span>
+                <span class="slot-name" id="slot-proof-name">Choose a file</span>
+                <span class="slot-meta">.json</span>
+              </button>
+              <button type="button" class="slot-remove" aria-label="Remove the proof file" hidden>
+                &#x2715;
+              </button>
+              <input
+                type="file"
+                accept="application/json,.json"
+                class="visually-hidden"
+                tabindex="-1"
+              />
+            </div>
+
+            <div class="slot slot-wide" data-slot="zip">
+              <button type="button" class="slot-pick" aria-describedby="slot-zip-name">
+                <span class="slot-kind">Evidence archive</span>
+                <span class="slot-name" id="slot-zip-name">Or choose a .zip instead</span>
+                <span class="slot-meta">.zip</span>
+              </button>
+              <button type="button" class="slot-remove" aria-label="Remove the archive" hidden>
+                &#x2715;
+              </button>
+              <input
+                type="file"
+                accept="application/zip,.zip"
+                class="visually-hidden"
+                tabindex="-1"
+              />
+            </div>
+          </div>
+
+          <p id="intake-message" class="intake-message" aria-live="polite">
+            Drop files anywhere on this page, or click a box to choose one.
+          </p>
         </div>
-        <div class="pickers">
-          <label class="picker">
-            <span class="picker-label">Sealed PDF</span>
-            <input id="pdf-input" type="file" accept="application/pdf,.pdf" />
-          </label>
-          <label class="picker">
-            <span class="picker-label">Proof JSON</span>
-            <input id="proof-input" type="file" accept="application/json,.json" />
-          </label>
-          <label class="picker">
-            <span class="picker-label">Evidence ZIP</span>
-            <input id="zip-input" type="file" accept="application/zip,.zip" />
-          </label>
-        </div>
+
         <details class="advanced">
-          <summary>Advanced: pin the signing key</summary>
+          <summary>Pin the signing key</summary>
           <label class="field">
-            <span>Trusted key fingerprint(s), SHA-256 hex, one per line</span>
+            <span class="field-label">Trusted key fingerprints, SHA-256 hex, one per line</span>
             <textarea
               id="fingerprints"
               rows="2"
               spellcheck="false"
-              placeholder="optional"
+              autocomplete="off"
+              aria-describedby="fingerprints-help"
             ></textarea>
           </label>
-          <p class="help">
+          <p id="fingerprints-help" class="help">
             With a fingerprint supplied, a signature from any other key is reported as
-            <code>key: rejected</code>. Confirm the official fingerprint out of band.
+            <code>rejected</code>. Confirm the official fingerprint through a channel you trust, not
+            from the document itself.
           </p>
         </details>
+
         <div class="actions">
-          <button id="verify-button" type="button" disabled>Verify</button>
-          <button id="clear-button" type="button" class="secondary">Clear</button>
+          <button id="verify-button" type="button" class="button button-primary" disabled>
+            Verify
+          </button>
+          <button id="clear-button" type="button" class="button button-secondary">Clear</button>
         </div>
       </section>
 
-      <section id="result" class="result" aria-live="polite" hidden></section>
+      <section
+        id="result"
+        class="result"
+        role="status"
+        aria-live="polite"
+        aria-busy="false"
+        hidden
+      ></section>
 
       <footer class="footer">
         <p>
           Reference verifier for documents sealed by
-          <a href="https://minutenotary.ca">minutenotary.ca</a>.
+          <a href="https://minutenotary.ca">minutenotary.ca</a>. Open source under the MIT licence.
+          Works offline once loaded and makes no network requests.
         </p>
-        <p class="small">
-          Open source (MIT). Works offline once loaded. Makes no network requests. Command-line tool
-          and specification: <code>npx sealed-pdf-verify</code>.
+        <p class="footer-cli">
+          Same checks from a terminal:
+          <code>npx sealed-pdf-verify document.pdf --proof proof.json</code>
         </p>
       </footer>
     </main>

@@ -1,0 +1,30 @@
+name: Bug report
+description: A verdict, error or build that is wrong
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If a tampered input verifies as **genuine**, do not file it here — use the private security report (SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: '`npx sealed-pdf-verify --help` prints usage; the version is in package.json. Also say Node version or browser.'
+      placeholder: '0.1.0, Node 22.11, macOS'
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where
+      options: [CLI, Library (Node), Library (browser), Browser page, Build / CI, Docs]
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: What you ran and what happened
+      description: Command or code, the verdict you got (paste `--json` output if possible) and the verdict you expected. Attach a synthetic fixture if you can; never a real customer document.
+    validations:
+      required: true

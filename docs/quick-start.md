@@ -17,11 +17,12 @@ npx sealed-pdf-verify evidence.zip                                       # an ev
 npx sealed-pdf-verify --proof document.proof.json                        # proof-only mode
 ```
 
-To prove the signing key is the issuer's key, pin it (see
-[Confirming the key](fingerprint.md)):
+To prove the signing key is the issuer's key, pin it with a trust list you
+filled in yourself (see [Confirming the key](fingerprint.md); the CLI refuses
+an empty list):
 
 ```bash
-npx sealed-pdf-verify document.pdf --proof document.proof.json --trust trust/issuers.json
+npx sealed-pdf-verify document.pdf --proof document.proof.json --trust issuers.json
 ```
 
 ## Browser

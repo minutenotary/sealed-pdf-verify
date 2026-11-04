@@ -95,11 +95,18 @@ export function parseDerSignature(bytes: Uint8Array): ScalarPair {
   return { r: r.value, s: s.value };
 }
 
-/** Decodes DER or 64-byte P1363 into (r, s) and reports which encoding was used. */
+/**
+ * Decodes DER or 64-byte P1363 (`r || s`) into (r, s) and reports which
+ * encoding was used.
+ *
+ * The length decides, not the first byte. A P1363 signature whose `r` happens
+ * to start with 0x30 (about one in 256) looks like a DER SEQUENCE; handing it
+ * to the DER parser rejects it and would turn a genuine document into
+ * "altered". A DER Ecdsa-Sig-Value of exactly 64 bytes needs both integers to
+ * be unusually short (about 2^-48) and misreading it as P1363 is still safe:
+ * the mis-decoded pair simply fails to verify.
+ */
 export function decodeSignature(bytes: Uint8Array): ScalarPair & { encoding: SignatureEncoding } {
-  if (bytes[0] === 0x30) {
-    return { ...parseDerSignature(bytes), encoding: 'der' };
-  }
   if (bytes.length === 64) {
     return {
       r: bytesToBigInt(bytes.subarray(0, 32)),
@@ -107,7 +114,10 @@ export function decodeSignature(bytes: Uint8Array): ScalarPair & { encoding: Sig
       encoding: 'p1363',
     };
   }
-  throw new Error(`signature is neither DER nor 64-byte P1363 (${bytes.length} bytes)`);
+  if (bytes[0] !== 0x30) {
+    throw new Error(`signature is neither DER nor 64-byte P1363 (${bytes.length} bytes)`);
+  }
+  return { ...parseDerSignature(bytes), encoding: 'der' };
 }
 
 /**

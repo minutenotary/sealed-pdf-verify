@@ -51,8 +51,9 @@ Later releases: bump `version` in `package.json`, move the CHANGELOG
 
 ## 5. Official key fingerprint
 
-`trust/issuers.json` ships empty on purpose. Read the official public key
-from the sealing service's verification page and compute:
+`trust/issuers.json` ships empty on purpose, and the CLI refuses an empty
+trust list (`--trust` exits 2 until the file is filled). Read the official
+public key from the sealing service's verification page and compute:
 
 ```bash
 openssl ec -pubin -in official-key.pem -outform DER | openssl dgst -sha256

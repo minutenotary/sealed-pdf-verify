@@ -12,8 +12,7 @@ Please use GitHub's private vulnerability reporting on this repository
   that you are allowed to share, or a synthetic one made with
   `scripts/make-fixtures.mjs`),
 - the verdict you got and the verdict you expected,
-- the package version (`npx sealed-pdf-verify --help` prints usage; the
-  version is in `package.json`).
+- the package version (`npx sealed-pdf-verify --version`).
 
 Reports are acknowledged within a few working days. There is no bug bounty.
 Fixes ship as a patch release with a CHANGELOG entry; coordinated disclosure

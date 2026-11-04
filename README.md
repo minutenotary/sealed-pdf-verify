@@ -1,5 +1,10 @@
 # sealed-pdf-verify
 
+[![CI](https://github.com/OWNER/sealed-pdf-verify/actions/workflows/ci.yml/badge.svg)](https://github.com/OWNER/sealed-pdf-verify/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/sealed-pdf-verify)](https://www.npmjs.com/package/sealed-pdf-verify)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Node ≥ 20](https://img.shields.io/badge/node-%E2%89%A5%2020-brightgreen)](package.json)
+
 Offline, independent verifier for PDF documents sealed by
 [minutenotary.ca](https://minutenotary.ca). It checks, without any network
 access, that the PDF you hold is byte-for-byte the one that was sealed, that
@@ -7,7 +12,8 @@ the seal was made with the issuer's key, when it was made (RFC 3161
 timestamp), and that the seal sits in the issuer's public append-only ledger.
 
 - **Library** (`import { verifySealedPdf } from 'sealed-pdf-verify'`): ESM +
-  CommonJS + TypeScript types, runs in Node 20+ and in browsers (WebCrypto
+  CommonJS + TypeScript types, runs in Node 20+ (development needs 22.12+)
+  and in browsers (WebCrypto
   for SHA-256, [@noble/curves](https://github.com/paulmillr/noble-curves)
   for ECDSA, [PKI.js](https://pkijs.org) for the timestamp chain).
 - **CLI** (`npx sealed-pdf-verify`): one command, exit status 0/1/2.
@@ -46,16 +52,26 @@ Verdict: GENUINE
 ```
 
 Exit status: `0` genuine, `1` altered, `2` incomplete or error. Add `--json`
-for the verdict as JSON.
+for the verdict as JSON, `--version` for the version. Proof-derived text is
+stripped of control characters before it reaches the terminal (`--json` is
+untouched).
 
-To also prove that the key is the issuer's key, pin it:
+Proof-only mode (`--proof` without a PDF) checks the proof against its own
+recorded digest. It can prove that the proof is internally consistent, not
+that any PDF matches it; the verdict line, the `mode` field and a note all
+say so, and the exit status is the same `0` as a full check. Scripts that
+need the PDF checked must pass it.
+
+To also prove that the key is the issuer's key, pin it with a trust list you
+have filled in yourself (the CLI refuses an empty one):
 
 ```bash
-npx sealed-pdf-verify document.pdf --proof document.proof.json --trust trust/issuers.json
+npx sealed-pdf-verify document.pdf --proof document.proof.json --trust issuers.json
 ```
 
-`trust/issuers.json` ships empty in this repository; see
-[Confirming the key fingerprint](#confirming-the-key-fingerprint).
+`trust/issuers.json` in this repository is the empty template for that file;
+see [Confirming the key fingerprint](#confirming-the-key-fingerprint) for the
+fingerprint to put in it.
 
 An evidence ZIP (delivered by the issuer on request) verifies in one go:
 
@@ -166,8 +182,12 @@ Lower-level helpers are exported too: `sha256Hex`, `parseProof`,
 `verifyTimestampTrust`, `computeLedgerEntryHash`, `verifyLedgerEntry`,
 `verifyLedgerSegment`, `BUILT_IN_TSA_ROOTS`.
 
-`verifySealedPdf` never throws on bad input; an unreadable proof yields
-`overall: 'incomplete'` with `error` set. The helpers throw on malformed input
+`verifySealedPdf` and `verifyEvidenceZip` never throw on bad **document**
+input; an unreadable proof yields `overall: 'incomplete'` with `error` set and
+a broken file inside an archive marks that document `incomplete`. Bad
+**options** (a malformed fingerprint, an unparsable trusted key or root
+certificate) throw `TypeError` up front: those are caller mistakes, not
+evidence about the document. The lower-level helpers throw on malformed input
 where the documentation says so.
 
 Browsers: the library uses only WebCrypto, `atob`/`btoa` and `TextEncoder`;

@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { PROOF_ONLY_NOTE, verifySealedPdf } from '../src/index.js';
-import type { Verdict } from '../src/index.js';
+import type {
+  HashCheck,
+  KeyCheck,
+  LedgerCheck,
+  SignatureCheck,
+  TimestampCheck,
+  Verdict,
+} from '../src/index.js';
+import { decideOverall, prepareOptions } from '../src/verify.js';
 import { facts, readBytes, readProof, readText } from './helpers.js';
 
 const pdf = readBytes('sample.pdf');
@@ -52,6 +60,17 @@ describe('verifySealedPdf — genuine documents', () => {
     }
     const p1363 = await verifySealedPdf({ pdf, proof: readText('sample.p1363.proof.json') });
     expect(p1363.reasons.signature).toContain('p1363 encoding');
+  });
+  it('reads a P1363 signature whose r starts with 0x30 as P1363', async () => {
+    const v = await verifySealedPdf({ pdf, proof: readText('sample.p1363-30.proof.json') });
+    expect(v.overall).toBe('genuine');
+    expect(v.reasons.signature).toContain('p1363 encoding');
+  });
+  it('trusts a real DigiCert timestamp with the shipped root', async () => {
+    const v = await verifySealedPdf({ pdf, proof: readText('sample.digicert.proof.json') });
+    expect(v.overall).toBe('genuine');
+    expectChecks(v, { timestamp: 'trusted' });
+    expect(v.facts?.tsaUrl).toBe('http://timestamp.digicert.com');
   });
   it('reports timestamp none and ledger not_checked when the proof lacks them', async () => {
     const noTs = await verifySealedPdf({ pdf, proof: readText('sample.no-timestamp.proof.json') });
@@ -144,7 +163,72 @@ describe('verifySealedPdf — timestamp trust options', () => {
       options: { useBuiltInTsaRoots: false },
     });
     expectChecks(noRoots, { timestamp: 'imprint_only' });
-    expect(noRoots.reasons.timestamp).toContain('not evaluated');
+    expect(noRoots.reasons.timestamp).toContain('no trusted roots configured');
+    expect(disabled.reasons.timestamp).toContain('trust check disabled');
+  });
+  it('ignores supplied text without a CERTIFICATE block but keeps the built-ins', async () => {
+    const v = await verifySealedPdf({ pdf, proof, options: { tsaRootsPem: ['no pem here'] } });
+    expectChecks(v, { timestamp: 'trusted' });
+  });
+});
+
+describe('verifySealedPdf — option validation (caller errors throw, documents never do)', () => {
+  it('throws on a malformed trusted fingerprint', async () => {
+    await expect(
+      verifySealedPdf({ pdf, proof, options: { trustedKeyFingerprints: ['zz'] } }),
+    ).rejects.toThrow(TypeError);
+    await expect(prepareOptions({ trustedKeyFingerprints: [facts.signer, 'abc'] })).rejects.toThrow(
+      'trustedKeyFingerprints[1]',
+    );
+  });
+  it('throws on a trusted public key that does not parse', async () => {
+    await expect(
+      verifySealedPdf({ pdf, proof, options: { trustedPublicKeys: ['not a key'] } }),
+    ).rejects.toThrow(/trustedPublicKeys\[0\]/);
+  });
+  it('throws on a root certificate that does not parse', async () => {
+    const bogus = `-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n`;
+    await expect(
+      verifySealedPdf({ pdf, proof, options: { tsaRootsPem: [bogus] } }),
+    ).rejects.toThrow(/tsaRootsPem: root certificate 0/);
+  });
+  it('counts usable roots', async () => {
+    const both = await prepareOptions({ tsaRootsPem: [testRoot] });
+    expect(both.tsaRootCount).toBe(3);
+    const none = await prepareOptions({ useBuiltInTsaRoots: false });
+    expect(none.tsaRootCount).toBe(0);
+    expect(none.trustedFingerprints).toBeNull();
+    expect((await prepareOptions()).checkTimestampTrust).toBe(true);
+  });
+});
+
+describe('decideOverall (the README verdict rule, every combination)', () => {
+  const hashes: HashCheck[] = ['match', 'mismatch', 'not_checked'];
+  const signatures: SignatureCheck[] = ['valid', 'invalid'];
+  const keys: KeyCheck[] = ['pinned', 'unpinned', 'rejected'];
+  const timestamps: TimestampCheck[] = ['trusted', 'imprint_only', 'invalid', 'none'];
+  const ledgers: LedgerCheck[] = ['consistent', 'inconsistent', 'not_checked'];
+  it('is altered exactly when a check fails', () => {
+    let combinations = 0;
+    for (const hash of hashes)
+      for (const signature of signatures)
+        for (const key of keys)
+          for (const timestamp of timestamps)
+            for (const ledger of ledgers) {
+              combinations += 1;
+              const failures = [
+                hash === 'mismatch',
+                signature === 'invalid',
+                key === 'rejected',
+                timestamp === 'invalid',
+                ledger === 'inconsistent',
+              ].filter(Boolean).length;
+              expect(
+                decideOverall({ hash, signature, key, timestamp, ledger }),
+                JSON.stringify({ hash, signature, key, timestamp, ledger }),
+              ).toBe(failures > 0 ? 'altered' : 'genuine');
+            }
+    expect(combinations).toBe(3 * 2 * 3 * 4 * 3);
   });
 });
 
@@ -182,17 +266,11 @@ describe('verifySealedPdf — key pinning', () => {
     expect(v.overall).toBe('altered');
     expectChecks(v, { signature: 'valid', key: 'rejected' });
   });
-  it('rejects when the supplied trust list is empty or unusable', async () => {
+  it('rejects every key when the supplied trust list is empty (trust nobody)', async () => {
     const empty = await verifySealedPdf({ pdf, proof, options: { trustedKeyFingerprints: [] } });
-    expectChecks(empty, { key: 'rejected' });
-    expect(empty.reasons.key).toContain('no usable fingerprint');
-    const garbage = await verifySealedPdf({
-      pdf,
-      proof,
-      options: { trustedPublicKeys: ['not a key'] },
-    });
-    expectChecks(garbage, { key: 'rejected' });
-    expect(garbage.notes.some((n) => n.includes('could not be parsed'))).toBe(true);
+    expect(empty.overall).toBe('altered');
+    expectChecks(empty, { signature: 'valid', key: 'rejected' });
+    expect(empty.reasons.key).toContain('empty');
   });
 });
 

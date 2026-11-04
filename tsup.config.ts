@@ -1,4 +1,11 @@
+import { readFileSync } from 'node:fs';
 import { defineConfig } from 'tsup';
+
+const { version } = JSON.parse(
+  readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
+) as {
+  version: string;
+};
 
 export default defineConfig([
   {
@@ -17,22 +24,32 @@ export default defineConfig([
     // self-contained (everything bundled) to keep `require()` working.
     entry: { index: 'src/index.ts' },
     format: ['cjs'],
-    sourcemap: true,
+    // Emits index.d.cts: a `require()` consumer must get CommonJS-flavoured
+    // types, or TypeScript under node16 resolution flags the package as ESM
+    // masquerading as CJS.
+    dts: true,
+    // No source map: the self-contained bundle's map was 4 MB and doubled the
+    // tarball for a build nobody steps through; the ESM build keeps its map.
+    sourcemap: false,
     target: 'node20',
     platform: 'node',
     noExternal: [/.*/],
     treeshake: true,
+    minify: true,
   },
   {
     // Command-line tool: one self-contained ESM file (no node_modules needed
     // at runtime, which keeps the container image to dist/cli.js alone).
     entry: { cli: 'cli/index.ts' },
     format: ['esm'],
-    sourcemap: true,
+    sourcemap: false,
     target: 'node20',
     platform: 'node',
     noExternal: [/.*/],
     treeshake: true,
+    minify: true,
+    // `--version` prints this; the runtime image carries no package.json.
+    define: { __SPV_VERSION__: JSON.stringify(version) },
     banner: { js: '#!/usr/bin/env node' },
   },
 ]);

@@ -22,17 +22,25 @@
 - Global consistency of the ledger: the local check recomputes one entry (or
   one segment). The online check compares against the issuer's published
   chain.
+- That the timestamp authority's key was not revoked. Offline verification
+  consults no CRL or OCSP: a TSA signer revoked after `genTime` (or a leaked
+  key used with a back-dated `genTime` inside the certificate's validity)
+  still yields `timestamp: trusted`. The shipped roots belong to authorities
+  whose compromise would be public news; keep the package current.
 
 ## Attacks considered
 
-| Attack                                 | Defence                                                                           |
-| -------------------------------------- | --------------------------------------------------------------------------------- |
-| Modified PDF with the original proof   | hash mismatch, signature invalid, timestamp invalid                               |
-| Forged proof with a new key            | key rejected when pinned; `unpinned` is reported honestly when not                |
-| Replayed proof on a different PDF      | hash mismatch                                                                     |
-| Back-dated timestamp                   | the token is signed by a TSA; forging it needs the TSA's key                      |
-| Timestamp from a rogue TSA             | chain must reach a shipped or user-supplied root; otherwise `invalid`             |
-| Malformed DER to confuse the parser    | strict DER (minimal lengths/integers, no trailing bytes), fail closed             |
-| Timing side channels on digest compare | constant-time comparison                                                          |
-| Tool phoning home                      | no network code; browser page is one file with no external requests               |
-| Supply chain of roots                  | roots downloaded from the CAs' own sites, committed, mirrored by a checked script |
+| Attack                                 | Defence                                                                            |
+| -------------------------------------- | ---------------------------------------------------------------------------------- |
+| Modified PDF with the original proof   | hash mismatch, signature invalid, timestamp invalid                                |
+| Forged proof with a new key            | key rejected when pinned; `unpinned` is reported honestly when not                 |
+| Replayed proof on a different PDF      | hash mismatch                                                                      |
+| Back-dated timestamp                   | the token is signed by a TSA; forging it needs the TSA's key                       |
+| Timestamp from a rogue TSA             | chain must reach a shipped or user-supplied root; otherwise `invalid`              |
+| Malformed DER to confuse the parser    | strict DER (minimal lengths/integers, no trailing bytes), fail closed              |
+| Timing side channels on digest compare | constant-time comparison                                                           |
+| Tool phoning home                      | no network code; browser page is one file with no external requests                |
+| Supply chain of roots                  | roots downloaded from the CAs' own sites, committed, their SHA-256 pinned in tests |
+| Crafted proof text aimed at the reader | CLI strips control characters; the page links `verifyUrl` only when it is https    |
+| Decompression bomb in an evidence ZIP  | only the paths the verifier reads are inflated, each capped at 256 MiB             |
+| Operator misconfiguration              | bad fingerprints / roots throw; they are never reported as "altered"               |

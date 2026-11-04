@@ -2,10 +2,13 @@
 // Generates every test fixture under test/fixtures/ from scratch:
 //   - an ephemeral P-256 signing key (only the PUBLIC key is written)
 //   - two tiny hand-built PDFs plus a tampered copy
-//   - proofs: DER, high-S, P1363, legacy label, wrong key, no timestamp,
-//     no ledger, bad ledger, synthetic TSA, real FreeTSA
-//   - a synthetic RFC 3161 TSA (root + leaf with timeStamping EKU) and tokens
-//   - ONE real token from https://freetsa.org/tsr (only a 32-byte hash is sent)
+//   - proofs: DER, high-S, P1363 (plus one whose r starts with 0x30), legacy
+//     label, wrong key, no timestamp, no ledger, bad ledger, synthetic TSA,
+//     real FreeTSA, real DigiCert
+//   - a synthetic RFC 3161 TSA (root + leaf with timeStamping EKU) and tokens,
+//     including malformed variants the verifier must reject
+//   - TWO real tokens, from https://freetsa.org/tsr and
+//     http://timestamp.digicert.com (only a 32-byte hash is sent to each)
 //   - trust lists, a ledger segment and an evidence ZIP
 // Signatures are produced with node:crypto so the verifier's own ECDSA code
 // is not used to make what it later checks.
@@ -34,6 +37,7 @@ const SHA256_OID = '2.16.840.1.101.3.4.2.1';
 const SHA1_OID = '1.3.14.3.2.26';
 const ID_CT_TSTINFO = '1.2.840.113549.1.9.16.1.4';
 const ID_SIGNED_DATA = '1.2.840.113549.1.7.2';
+const ID_DATA = '1.2.840.113549.1.7.1';
 const EKU_TIMESTAMPING = '1.3.6.1.5.5.7.3.8';
 const P256_N = BigInt('0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551');
 
@@ -124,6 +128,14 @@ const sampleSigDer = signDer(signer.privateKey, samplePdf);
 const sampleSigLow = withS(sampleSigDer, false);
 const sampleSigHigh = withS(sampleSigDer, true);
 const sampleSigP1363 = signP1363(signer.privateKey, samplePdf);
+// A P1363 signature whose first byte is the DER SEQUENCE tag (about 1 in 256):
+// the verifier must still read it as P1363.
+let sampleSigP1363Thirty = null;
+for (let i = 0; i < 100_000 && sampleSigP1363Thirty === null; i += 1) {
+  const candidate = signP1363(signer.privateKey, samplePdf);
+  if (candidate[0] === 0x30) sampleSigP1363Thirty = candidate;
+}
+if (sampleSigP1363Thirty === null) throw new Error('no P1363 signature starting with 0x30 found');
 const secondSigDer = signDer(signer.privateKey, secondPdf);
 const wrongKeySig = signDer(other.privateKey, samplePdf);
 
@@ -281,6 +293,11 @@ async function makeToken({
   keys,
   genTime = GEN_TIME,
   serial = 1001,
+  // Variants the verifier must reject (all default to the well-formed token):
+  contentTypeAttr = 'tstinfo', // 'tstinfo' | 'data' | 'none'
+  eContentType = ID_CT_TSTINFO,
+  constructedContent = false,
+  extraCerts = [],
 }) {
   const tst = new pkijs.TSTInfo({
     version: 1,
@@ -301,7 +318,14 @@ async function makeToken({
   const tstDer = tst.toSchema().toBER(false);
   const signed = new pkijs.SignedData({
     version: 3,
-    encapContentInfo: new pkijs.EncapsulatedContentInfo({ eContentType: ID_CT_TSTINFO }),
+    encapContentInfo: constructedContent
+      ? // The pkijs constructor re-wraps the OCTET STRING as a constructed
+        // (BER) string; real TSAs never do, so this is the "constructed" variant.
+        new pkijs.EncapsulatedContentInfo({
+          eContentType,
+          eContent: new asn1js.OctetString({ valueHex: tstDer }),
+        })
+      : new pkijs.EncapsulatedContentInfo({ eContentType }),
     signerInfos: [
       new pkijs.SignerInfo({
         version: 1,
@@ -311,29 +335,39 @@ async function makeToken({
         }),
       }),
     ],
-    certificates: [cert],
+    certificates: [cert, ...extraCerts],
   });
-  // Assign directly: the pkijs constructor would re-wrap the OCTET STRING as a
-  // constructed (BER) string, while real TSAs emit a primitive DER OCTET STRING.
-  signed.encapContentInfo.eContent = new asn1js.OctetString({ valueHex: tstDer });
-  signed.signerInfos[0].signedAttrs = new pkijs.SignedAndUnsignedAttributes({
-    type: 0,
-    attributes: [
+  // Assign directly for the normal case: a primitive DER OCTET STRING, as
+  // real TSAs emit.
+  if (!constructedContent)
+    signed.encapContentInfo.eContent = new asn1js.OctetString({ valueHex: tstDer });
+  const attributes = [];
+  if (contentTypeAttr !== 'none')
+    attributes.push(
       new pkijs.Attribute({
         type: '1.2.840.113549.1.9.3',
-        values: [new asn1js.ObjectIdentifier({ value: ID_CT_TSTINFO })],
-      }),
-      new pkijs.Attribute({
-        type: '1.2.840.113549.1.9.5',
-        values: [new asn1js.UTCTime({ valueDate: genTime })],
-      }),
-      new pkijs.Attribute({
-        type: '1.2.840.113549.1.9.4',
         values: [
-          new asn1js.OctetString({ valueHex: new Uint8Array(sha256(Buffer.from(tstDer))).buffer }),
+          new asn1js.ObjectIdentifier({
+            value: contentTypeAttr === 'data' ? ID_DATA : ID_CT_TSTINFO,
+          }),
         ],
       }),
-    ],
+    );
+  attributes.push(
+    new pkijs.Attribute({
+      type: '1.2.840.113549.1.9.5',
+      values: [new asn1js.UTCTime({ valueDate: genTime })],
+    }),
+    new pkijs.Attribute({
+      type: '1.2.840.113549.1.9.4',
+      values: [
+        new asn1js.OctetString({ valueHex: new Uint8Array(sha256(Buffer.from(tstDer))).buffer }),
+      ],
+    }),
+  );
+  signed.signerInfos[0].signedAttrs = new pkijs.SignedAndUnsignedAttributes({
+    type: 0,
+    attributes,
   });
   await signed.sign(keys.privateKey, 0, 'SHA-256');
   const ci = new pkijs.ContentInfo({ contentType: ID_SIGNED_DATA, content: signed.toSchema(true) });
@@ -362,8 +396,25 @@ const syntheticSha1Tsr = await makeToken({
   serial: 1004,
 });
 
-// ---------------------------------------------------------------- real FreeTSA token
-async function fetchFreeTsa(digest) {
+// Malformed variants: each one must be rejected by parseTimestampToken.
+const variant = (serial, extra) =>
+  makeToken({ digest: sampleDigest, cert: leafCert, keys: leafKeys, serial, ...extra });
+const syntheticNoContentTypeTsr = await variant(1011, { contentTypeAttr: 'none' });
+const syntheticWrongContentTypeTsr = await variant(1012, { contentTypeAttr: 'data' });
+const syntheticConstructedTsr = await variant(1013, { constructedContent: true });
+const syntheticIdDataTsr = await variant(1014, { eContentType: ID_DATA, contentTypeAttr: 'data' });
+// A token from the unrelated TSA that carries its own self-signed root in the
+// certificate set: an embedded root must never anchor the chain.
+const syntheticUntrustedWithRootTsr = await makeToken({
+  digest: sampleDigest,
+  cert: strangerCert,
+  keys: strangerKeys,
+  serial: 1015,
+  extraCerts: [strangerRoot],
+});
+
+// ---------------------------------------------------------------- real tokens
+async function fetchTsa(url, digest) {
   const nonce = randomBytes(8);
   nonce[0] &= 0x7f;
   const req = new TimeStampReq({
@@ -376,24 +427,32 @@ async function fetchFreeTsa(digest) {
     certReq: true,
   });
   const body = AsnConvert.serialize(req);
-  const res = await fetch('https://freetsa.org/tsr', {
+  const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/timestamp-query' },
     body,
   });
-  if (!res.ok) throw new Error(`freetsa.org answered ${res.status}`);
+  if (!res.ok) throw new Error(`${url} answered ${res.status}`);
   const resp = AsnConvert.parse(await res.arrayBuffer(), TimeStampResp);
   if (resp.status.status > 1 || !resp.timeStampToken)
-    throw new Error(`freetsa.org status ${resp.status.status}`);
+    throw new Error(`${url} status ${resp.status.status}`);
   return Buffer.from(AsnConvert.serialize(resp.timeStampToken));
 }
-let realTsr = null;
-try {
-  realTsr = await fetchFreeTsa(sampleDigest);
-  console.log(`fetched real FreeTSA token (${realTsr.length} bytes)`);
-} catch (error) {
-  console.error(`WARNING: could not fetch a FreeTSA token: ${error.message}`);
+async function tryFetch(name, url, digest) {
+  try {
+    const token = await fetchTsa(url, digest);
+    console.log(`fetched real ${name} token (${token.length} bytes)`);
+    return token;
+  } catch (error) {
+    console.error(`WARNING: could not fetch a ${name} token: ${error.message}`);
+    return null;
+  }
 }
+const FREETSA_URL = 'https://freetsa.org/tsr';
+const DIGICERT_URL = 'http://timestamp.digicert.com';
+const realTsr = await tryFetch('FreeTSA', FREETSA_URL, sampleDigest);
+// DigiCert is the production TSA: RSA-4096 signer, three-certificate chain.
+const digicertTsr = await tryFetch('DigiCert', DIGICERT_URL, sampleDigest);
 
 // ---------------------------------------------------------------- proofs
 const SEAL_1 = 'SPV-TEST-000001';
@@ -442,10 +501,16 @@ write('synthetic.tsr', syntheticTsr);
 write('synthetic-noeku.tsr', syntheticNoEkuTsr);
 write('synthetic-untrusted.tsr', syntheticUntrustedTsr);
 write('synthetic-sha1.tsr', syntheticSha1Tsr);
+write('synthetic-no-content-type.tsr', syntheticNoContentTypeTsr);
+write('synthetic-wrong-content-type.tsr', syntheticWrongContentTypeTsr);
+write('synthetic-constructed.tsr', syntheticConstructedTsr);
+write('synthetic-id-data.tsr', syntheticIdDataTsr);
+write('synthetic-untrusted-with-root.tsr', syntheticUntrustedWithRootTsr);
 if (realTsr) write('real-freetsa.tsr', realTsr);
+if (digicertTsr) write('real-digicert.tsr', digicertTsr);
 
 const primaryTsr = realTsr ?? syntheticTsr;
-const primaryTsaUrl = realTsr ? 'https://freetsa.org/tsr' : 'https://tsa.example.test/tsr';
+const primaryTsaUrl = realTsr ? FREETSA_URL : 'https://tsa.example.test/tsr';
 const base = { sealId: SEAL_1, hash: sampleHash, ledger: ledgerBlock(entry1) };
 write(
   'sample.proof.json',
@@ -459,6 +524,22 @@ write(
   'sample.p1363.proof.json',
   json(proof({ ...base, signature: sampleSigP1363, tsaToken: primaryTsr, tsaUrl: primaryTsaUrl })),
 );
+write(
+  'sample.p1363-30.proof.json',
+  json(
+    proof({
+      ...base,
+      signature: sampleSigP1363Thirty,
+      tsaToken: primaryTsr,
+      tsaUrl: primaryTsaUrl,
+    }),
+  ),
+);
+if (digicertTsr)
+  write(
+    'sample.digicert.proof.json',
+    json(proof({ ...base, signature: sampleSigLow, tsaToken: digicertTsr, tsaUrl: DIGICERT_URL })),
+  );
 write(
   'sample.legacy.proof.json',
   json(

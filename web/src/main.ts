@@ -1,258 +1,261 @@
+/**
+ * Browser verifier page: state and event wiring.
+ *
+ * Everything runs in the tab: the library is bundled into the page, files are
+ * read with the File API and no request ever leaves the browser. This module
+ * only connects the DOM to `verifySealedPdf` / `verifyEvidenceZip`; rendering
+ * lives in render.ts and every verdict rule lives in the library.
+ */
 import { verifyEvidenceZip, verifySealedPdf } from '../../src/index.js';
-import type { Checks, EvidenceResult, Verdict, VerifyOptions } from '../../src/index.js';
+import type { VerifyInput, VerifyOptions } from '../../src/index.js';
+import {
+  formatBytes,
+  renderEvidence,
+  renderFailure,
+  renderSkeleton,
+  renderVerdict,
+} from './render.js';
 
-type CheckName = keyof Checks;
-const CHECK_ORDER: CheckName[] = ['hash', 'signature', 'key', 'timestamp', 'ledger'];
+type SlotKind = 'pdf' | 'proof' | 'zip';
 
-const GOOD = new Set(['match', 'valid', 'pinned', 'trusted', 'consistent']);
-const BAD = new Set(['mismatch', 'invalid', 'rejected', 'inconsistent']);
-const WARN = new Set(['unpinned', 'imprint_only']);
+const SLOT_PROMPT: Readonly<Record<SlotKind, string>> = {
+  pdf: 'Choose a file',
+  proof: 'Choose a file',
+  zip: 'Or choose a .zip instead',
+};
 
-function byId(id: string): HTMLElement {
-  const el = document.getElementById(id);
-  if (!el) throw new Error(`missing element #${id}`);
-  return el;
-}
+const SLOT_EXTENSION: Readonly<Record<SlotKind, string>> = {
+  pdf: '.pdf',
+  proof: '.json',
+  zip: '.zip',
+};
 
-const dropzone = byId('dropzone');
-const pdfInput = byId('pdf-input') as HTMLInputElement;
-const proofInput = byId('proof-input') as HTMLInputElement;
-const zipInput = byId('zip-input') as HTMLInputElement;
-const fingerprints = byId('fingerprints') as HTMLTextAreaElement;
-const verifyButton = byId('verify-button') as HTMLButtonElement;
-const clearButton = byId('clear-button') as HTMLButtonElement;
-const result = byId('result');
+const DEFAULT_MESSAGE = 'Drop files anywhere on this page, or click a box to choose one.';
 
-interface Selected {
-  pdf: File | null;
-  proof: File | null;
-  zip: File | null;
-}
-const selected: Selected = { pdf: null, proof: null, zip: null };
-
-function el(tag: string, className?: string, text?: string): HTMLElement {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (text !== undefined) node.textContent = text;
+/** Finds a required element and checks its type at runtime, so a markup slip fails loudly. */
+function query<T extends Element>(root: ParentNode, selector: string, type: new () => T): T {
+  const node = root.querySelector(selector);
+  if (!(node instanceof type)) throw new Error(`missing element ${selector}`);
   return node;
 }
 
-function badgeClass(value: string): string {
-  if (GOOD.has(value)) return 'badge badge-ok';
-  if (BAD.has(value)) return 'badge badge-bad';
-  if (WARN.has(value)) return 'badge badge-warn';
-  return 'badge badge-neutral';
+function prefersReducedMotion(): boolean {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
-function renderVerdict(verdict: Verdict): HTMLElement {
-  const box = el('div');
-  const banner = el('p', `verdict verdict-${verdict.overall}`, verdict.overall.toUpperCase());
-  if (verdict.mode === 'proof-only')
-    banner.append(el('small', undefined, 'Proof-only: the PDF bytes were not checked.'));
-  if (verdict.error) banner.append(el('small', undefined, verdict.error));
-  box.append(banner);
+// ---------- State ----------
 
-  const table = el('table', 'checks');
-  for (const name of CHECK_ORDER) {
-    const row = el('tr');
-    row.append(el('th', undefined, name));
-    const cell = el('td');
-    cell.append(el('span', badgeClass(verdict.checks[name]), verdict.checks[name]));
-    cell.append(document.createTextNode(verdict.reasons[name]));
-    row.append(cell);
-    table.append(row);
-  }
-  box.append(table);
+const files: Record<SlotKind, File | null> = { pdf: null, proof: null, zip: null };
 
-  const f = verdict.facts;
-  if (f) {
-    const dl = el('dl', 'facts');
-    const add = (k: string, v: string | null, mono = false): void => {
-      if (v === null || v === '') return;
-      dl.append(el('dt', undefined, k));
-      dl.append(el('dd', mono ? 'mono' : undefined, v));
-    };
-    add('Seal id', f.sealId, true);
-    add('Sealed digest', f.documentHash, true);
-    if (f.computedHash !== null && f.computedHash !== f.documentHash)
-      add('PDF digest', f.computedHash, true);
-    add('Key fingerprint', f.fingerprint, true);
-    add('Key id', f.keyId ? `${f.keyId}${f.keyVersion ? ` (version ${f.keyVersion})` : ''}` : null);
-    add('Sealed at', f.sealedAt);
-    add(
-      'Timestamp',
-      f.timestampTime ? `${f.timestampTime}${f.tsaUrl ? ` via ${f.tsaUrl}` : ''}` : null,
-    );
-    add('Algorithm', f.algorithm, true);
-    if (f.verifyUrl) {
-      dl.append(el('dt', undefined, 'Online check'));
-      const dd = el('dd');
-      const a = el('a', undefined, f.verifyUrl) as HTMLAnchorElement;
-      a.href = f.verifyUrl;
-      a.rel = 'noopener';
-      a.target = '_blank';
-      dd.append(a);
-      dl.append(dd);
-    }
-    box.append(dl);
-  }
-  if (verdict.notes.length > 0) {
-    const ul = el('ul', 'notes');
-    for (const note of verdict.notes) ul.append(el('li', undefined, note));
-    box.append(ul);
-  }
-  return box;
+interface SlotView {
+  root: HTMLElement;
+  pick: HTMLButtonElement;
+  name: HTMLElement;
+  meta: HTMLElement;
+  remove: HTMLButtonElement;
+  input: HTMLInputElement;
 }
 
-function renderEvidence(res: EvidenceResult): HTMLElement {
-  const box = el('div');
-  const banner = el(
-    'p',
-    `verdict verdict-${res.overall}`,
-    `Evidence archive: ${res.overall.toUpperCase()}`,
-  );
-  banner.append(
-    el('small', undefined, `${res.documents.length} document(s), ${res.sealCount} seal(s)`),
-  );
-  box.append(banner);
-  for (const doc of res.documents) {
-    const section = el('div', 'doc');
-    const title = `${doc.path}${doc.sealId ? ` — seal ${doc.sealId}` : ''}${doc.disposition && doc.disposition !== 'active' ? ` [${doc.disposition}]` : ''}`;
-    section.append(el('h3', undefined, title));
-    if (doc.verdict) {
-      section.append(renderVerdict(doc.verdict));
-    } else {
-      section.append(el('p', `verdict verdict-${doc.overall}`, doc.overall.toUpperCase()));
-      section.append(el('p', 'notes', doc.reason ?? ''));
-      section.append(el('p', 'mono', `PDF digest ${doc.computedHash}`));
-    }
-    box.append(section);
+const slots = {} as Record<SlotKind, SlotView>;
+for (const kind of ['pdf', 'proof', 'zip'] as const) {
+  const root = query(document, `[data-slot="${kind}"]`, HTMLElement);
+  slots[kind] = {
+    root,
+    pick: query(root, '.slot-pick', HTMLButtonElement),
+    name: query(root, '.slot-name', HTMLElement),
+    meta: query(root, '.slot-meta', HTMLElement),
+    remove: query(root, '.slot-remove', HTMLButtonElement),
+    input: query(root, 'input[type="file"]', HTMLInputElement),
+  };
+}
+
+const fingerprints = query(document, '#fingerprints', HTMLTextAreaElement);
+const verifyButton = query(document, '#verify-button', HTMLButtonElement);
+const clearButton = query(document, '#clear-button', HTMLButtonElement);
+const message = query(document, '#intake-message', HTMLElement);
+const result = query(document, '#result', HTMLElement);
+
+function setMessage(text: string, isError = false): void {
+  message.textContent = text;
+  message.classList.toggle('is-error', isError);
+}
+
+/** Reflects `files` into the three slots and the Verify button. */
+function renderSlots(): void {
+  const archiveMode = files.zip !== null;
+  for (const kind of ['pdf', 'proof', 'zip'] as const) {
+    const view = slots[kind];
+    const file = files[kind];
+    view.root.classList.toggle('is-filled', file !== null);
+    view.root.classList.toggle('is-dimmed', kind !== 'zip' && archiveMode);
+    view.name.textContent = file === null ? SLOT_PROMPT[kind] : file.name;
+    view.meta.textContent = file === null ? SLOT_EXTENSION[kind] : formatBytes(file.size);
+    view.remove.hidden = file === null;
   }
-  const seg = res.ledgerSegment;
-  const segLine = seg
-    ? `Ledger segment ${seg.ok ? 'consistent' : 'INCONSISTENT'} (${seg.from !== null && seg.to !== null ? `entries #${seg.from}..#${seg.to}` : 'no entries'}, ${seg.count} checked)${seg.reason ? ` — ${seg.reason}` : ''}`
-    : 'Ledger segment not present in the archive';
-  box.append(el('p', 'doc', segLine));
-  if (res.notes.length > 0) {
-    const ul = el('ul', 'notes');
-    for (const note of res.notes) ul.append(el('li', undefined, note));
-    box.append(ul);
+  verifyButton.disabled = files.zip === null && files.proof === null;
+}
+
+/** Assigns a file to its slot by extension. Returns false for anything else. */
+function accept(file: File): boolean {
+  const name = file.name.toLowerCase();
+  let kind: SlotKind;
+  if (name.endsWith('.zip')) kind = 'zip';
+  else if (name.endsWith('.json')) kind = 'proof';
+  else if (name.endsWith('.pdf')) kind = 'pdf';
+  else return false;
+  // A PDF + proof pair and an archive are two different inputs; keep one mode.
+  if (kind === 'zip') {
+    files.pdf = null;
+    files.proof = null;
+  } else {
+    files.zip = null;
   }
-  return box;
+  files[kind] = file;
+  return true;
+}
+
+function clearResult(): void {
+  result.hidden = true;
+  result.replaceChildren();
+  result.setAttribute('aria-busy', 'false');
+}
+
+function showResult(node: HTMLElement, { busy = false } = {}): void {
+  // Unhide first, then fill: a live region announces content that changes
+  // while it is visible, not content that appears together with it.
+  result.hidden = false;
+  result.setAttribute('aria-busy', busy ? 'true' : 'false');
+  result.replaceChildren(node);
+  if (!busy) {
+    result.classList.remove('result-enter');
+    // Restarting the animation needs a layout flush between remove and add.
+    result.getBoundingClientRect();
+    result.classList.add('result-enter');
+    const word = result.querySelector('.verdict-word');
+    if (word instanceof HTMLElement) word.focus({ preventScroll: true });
+  }
+  result.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'start' });
 }
 
 function options(): VerifyOptions {
   const lines = fingerprints.value
     .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
-  const opts: VerifyOptions = {};
-  if (lines.length > 0) opts.trustedKeyFingerprints = lines;
-  return opts;
-}
-
-function showResult(node: HTMLElement): void {
-  result.replaceChildren(node);
-  result.hidden = false;
-  result.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  return lines.length > 0 ? { trustedKeyFingerprints: lines } : {};
 }
 
 async function verify(): Promise<void> {
   verifyButton.disabled = true;
-  showResult(el('p', 'notes', 'Verifying…'));
+  showResult(renderSkeleton(), { busy: true });
   try {
-    if (selected.zip) {
-      const bytes = new Uint8Array(await selected.zip.arrayBuffer());
+    if (files.zip !== null) {
+      const bytes = new Uint8Array(await files.zip.arrayBuffer());
       showResult(renderEvidence(await verifyEvidenceZip(bytes, options())));
-    } else if (selected.proof) {
-      const proof = new Uint8Array(await selected.proof.arrayBuffer());
-      const input: Parameters<typeof verifySealedPdf>[0] = { proof, options: options() };
-      if (selected.pdf) input.pdf = new Uint8Array(await selected.pdf.arrayBuffer());
+    } else if (files.proof !== null) {
+      const input: VerifyInput = {
+        proof: new Uint8Array(await files.proof.arrayBuffer()),
+        options: options(),
+      };
+      if (files.pdf !== null) input.pdf = new Uint8Array(await files.pdf.arrayBuffer());
       showResult(renderVerdict(await verifySealedPdf(input)));
     } else {
-      showResult(el('p', 'notes', 'Choose a proof JSON (with its PDF) or an evidence ZIP first.'));
+      showResult(renderFailure('Choose a proof file (with its PDF) or an evidence archive first.'));
     }
   } catch (error) {
-    showResult(
-      el(
-        'p',
-        'verdict verdict-incomplete',
-        `Could not verify: ${error instanceof Error ? error.message : String(error)}`,
-      ),
-    );
+    showResult(renderFailure(error instanceof Error ? error.message : String(error)));
   } finally {
-    updateButtons();
+    renderSlots();
   }
 }
 
-function updateButtons(): void {
-  verifyButton.disabled = !(selected.zip ?? selected.proof);
-}
-
-function assign(file: File): void {
-  const name = file.name.toLowerCase();
-  if (name.endsWith('.zip')) selected.zip = file;
-  else if (name.endsWith('.json')) selected.proof = file;
-  else if (name.endsWith('.pdf')) selected.pdf = file;
-}
-
-function handleFiles(files: FileList | File[]): void {
-  for (const file of Array.from(files)) assign(file);
-  updateButtons();
-  if (selected.zip ?? (selected.proof && selected.pdf)) void verify();
-}
-
-pdfInput.addEventListener('change', () => {
-  selected.pdf = pdfInput.files?.[0] ?? null;
-  handleFiles([]);
-});
-proofInput.addEventListener('change', () => {
-  selected.proof = proofInput.files?.[0] ?? null;
-  handleFiles([]);
-});
-zipInput.addEventListener('change', () => {
-  selected.zip = zipInput.files?.[0] ?? null;
-  handleFiles([]);
-});
-
-for (const type of ['dragenter', 'dragover']) {
-  dropzone.addEventListener(type, (e) => {
-    e.preventDefault();
-    dropzone.classList.add('active');
-  });
-}
-for (const type of ['dragleave', 'drop']) {
-  dropzone.addEventListener(type, (e) => {
-    e.preventDefault();
-    dropzone.classList.remove('active');
-  });
-}
-dropzone.addEventListener('drop', (e) => {
-  const files = e.dataTransfer?.files;
-  if (files) handleFiles(files);
-});
-dropzone.addEventListener('click', () => {
-  pdfInput.click();
-});
-dropzone.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' || e.key === ' ') {
-    e.preventDefault();
-    pdfInput.click();
+/** After any change to `files`: update the slots, guide the next step, auto-run when complete. */
+function filesChanged(): void {
+  renderSlots();
+  const complete = files.zip !== null || (files.pdf !== null && files.proof !== null);
+  if (complete) {
+    setMessage(DEFAULT_MESSAGE);
+    void verify();
+    return;
   }
-});
+  clearResult();
+  if (files.pdf !== null) setMessage('Now add the proof file (.json) that came with the PDF.');
+  else if (files.proof !== null)
+    setMessage(
+      'Add the PDF to check the document itself, or press Verify to check the proof alone.',
+    );
+  else setMessage(DEFAULT_MESSAGE);
+}
+
+function acceptFiles(list: ArrayLike<File>): void {
+  const rejected: string[] = [];
+  for (const file of Array.from(list)) if (!accept(file)) rejected.push(file.name);
+  filesChanged();
+  if (rejected.length > 0)
+    setMessage(`Ignored ${rejected.join(', ')}: only .pdf, .json and .zip files are used.`, true);
+}
+
+// ---------- Events ----------
+
+for (const kind of ['pdf', 'proof', 'zip'] as const) {
+  const view = slots[kind];
+  view.pick.addEventListener('click', () => {
+    view.input.click();
+  });
+  view.input.addEventListener('change', () => {
+    const file = view.input.files?.[0];
+    if (file) acceptFiles([file]);
+    // Let the same file be chosen again after Clear.
+    view.input.value = '';
+  });
+  view.remove.addEventListener('click', () => {
+    files[kind] = null;
+    filesChanged();
+    view.pick.focus();
+  });
+}
+
 verifyButton.addEventListener('click', () => {
   void verify();
 });
+
 clearButton.addEventListener('click', () => {
-  selected.pdf = null;
-  selected.proof = null;
-  selected.zip = null;
-  pdfInput.value = '';
-  proofInput.value = '';
-  zipInput.value = '';
-  result.hidden = true;
-  result.replaceChildren();
-  updateButtons();
+  files.pdf = null;
+  files.proof = null;
+  files.zip = null;
+  fingerprints.value = '';
+  clearResult();
+  filesChanged();
 });
 
-updateButtons();
+// The whole page is a drop target. dragenter/dragleave fire for every nested
+// element the pointer crosses, so a depth counter tells a real leave apart.
+let dragDepth = 0;
+
+function hasFiles(event: DragEvent): boolean {
+  return event.dataTransfer?.types.includes('Files') ?? false;
+}
+
+document.addEventListener('dragenter', (event) => {
+  if (!hasFiles(event)) return;
+  event.preventDefault();
+  dragDepth += 1;
+  document.body.classList.add('is-dragging');
+});
+document.addEventListener('dragover', (event) => {
+  if (!hasFiles(event)) return;
+  event.preventDefault();
+});
+document.addEventListener('dragleave', () => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) document.body.classList.remove('is-dragging');
+});
+document.addEventListener('drop', (event) => {
+  event.preventDefault();
+  dragDepth = 0;
+  document.body.classList.remove('is-dragging');
+  const dropped = event.dataTransfer?.files;
+  if (dropped && dropped.length > 0) acceptFiles(dropped);
+});
+
+renderSlots();

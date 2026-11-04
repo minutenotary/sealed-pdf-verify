@@ -1,12 +1,18 @@
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import {
+  pemBlocks,
   verifyEvidenceZip,
   verifySealedPdf,
   type EvidenceResult,
   type Verdict,
+  type VerifyInput,
   type VerifyOptions,
 } from '../src/index.js';
+
+// Injected by the build (tsup `define`); absent when the source runs directly.
+declare const __SPV_VERSION__: string | undefined;
+const VERSION = typeof __SPV_VERSION__ === 'string' ? __SPV_VERSION__ : 'dev';
 
 export interface CliIo {
   out: (line: string) => void;
@@ -16,6 +22,18 @@ export interface CliIo {
 export const EXIT_GENUINE = 0;
 export const EXIT_ALTERED = 1;
 export const EXIT_INCOMPLETE = 2;
+
+/**
+ * Removes every control character except TAB from a line before it reaches a
+ * terminal. Proof fields (seal id, key id, URLs) and archive paths are
+ * attacker-controlled text; an escape sequence or a bare newline in one of
+ * them could move the cursor and overwrite the verdict line a person reads.
+ * `--json` output is untouched: JSON escapes these characters itself.
+ */
+export function sanitizeForTerminal(line: string): string {
+  // eslint-disable-next-line no-control-regex -- stripping control characters is the point
+  return line.replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u2028\u2029]/g, '');
+}
 
 const USAGE = `Usage:
   sealed-pdf-verify <file.pdf> --proof <proof.json> [options]
@@ -29,6 +47,7 @@ Options:
   --no-builtin-roots   do not trust the DigiCert / FreeTSA roots shipped with the package
   --no-tsa-trust       skip the timestamp signer-chain check (timestamp: imprint_only at best)
   --json               print the verdict object as JSON
+  -v, --version        print the version
   -h, --help           show this help
 
 Exit status: 0 genuine, 1 altered, 2 incomplete or error.`;
@@ -42,6 +61,7 @@ interface ParsedArgs {
   tsaTrust: boolean;
   json: boolean;
   help: boolean;
+  version: boolean;
 }
 
 function parse(argv: string[]): ParsedArgs {
@@ -56,6 +76,7 @@ function parse(argv: string[]): ParsedArgs {
       'no-tsa-trust': { type: 'boolean', default: false },
       json: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
+      version: { type: 'boolean', short: 'v', default: false },
     },
   });
   const parsed: ParsedArgs = {
@@ -65,6 +86,7 @@ function parse(argv: string[]): ParsedArgs {
     tsaTrust: !values['no-tsa-trust'],
     json: values.json,
     help: values.help,
+    version: values.version,
   };
   if (values.proof !== undefined) parsed.proof = values.proof;
   if (values.trust !== undefined) parsed.trust = values.trust;
@@ -80,18 +102,48 @@ function loadTrust(path: string): string[] {
   if (!Array.isArray(list) || !list.every((x): x is string => typeof x === 'string')) {
     throw new Error(`${path}: expected { "fingerprints": [ "<sha256 hex>", ... ] }`);
   }
+  // The library honours an empty list as "trust nobody" and rejects every
+  // key; from the command line that can only be an unfilled trust file, so
+  // refuse it as a usage error instead of reporting the document as altered.
+  if (list.length === 0) {
+    throw new Error(
+      `${path}: the trust list is empty; add the issuer's key fingerprint(s) before using --trust`,
+    );
+  }
   return list;
 }
 
+function loadRoots(path: string): string {
+  const text = readFileSync(path, 'utf8');
+  if (!pemBlocks(text).some((block) => block.label === 'CERTIFICATE')) {
+    throw new Error(`${path}: no CERTIFICATE block found (expected a PEM root certificate)`);
+  }
+  return text;
+}
+
 function buildOptions(args: ParsedArgs): VerifyOptions {
+  if (!args.builtinRoots && args.tsaRoots.length === 0 && args.tsaTrust) {
+    throw new Error(
+      '--no-builtin-roots leaves no root to trust: add --tsa-roots <file> or --no-tsa-trust',
+    );
+  }
   const options: VerifyOptions = {
     useBuiltInTsaRoots: args.builtinRoots,
     checkTimestampTrust: args.tsaTrust,
   };
   if (args.trust !== undefined) options.trustedKeyFingerprints = loadTrust(args.trust);
-  if (args.tsaRoots.length > 0)
-    options.tsaRootsPem = args.tsaRoots.map((p) => readFileSync(p, 'utf8'));
+  if (args.tsaRoots.length > 0) options.tsaRootsPem = args.tsaRoots.map(loadRoots);
   return options;
+}
+
+/** ZIP local-file-header or empty-archive signature ("PK\x03\x04" / "PK\x05\x06"). */
+function looksLikeZip(bytes: Uint8Array): boolean {
+  return (
+    bytes[0] === 0x50 &&
+    bytes[1] === 0x4b &&
+    (bytes[2] === 0x03 || bytes[2] === 0x05) &&
+    bytes[3] === bytes[2] + 1
+  );
 }
 
 const CHECK_LABELS: Record<keyof Verdict['checks'], string> = {
@@ -130,7 +182,7 @@ export function formatVerdict(verdict: Verdict): string[] {
     lines.push(`  Algorithm      ${f.algorithm}`);
   }
   for (const note of verdict.notes) lines.push(`  note: ${note}`);
-  return lines;
+  return lines.map(sanitizeForTerminal);
 }
 
 export function formatEvidence(result: EvidenceResult): string[] {
@@ -163,7 +215,7 @@ export function formatEvidence(result: EvidenceResult): string[] {
     lines.push('  Ledger segment not present in the archive');
   }
   for (const note of result.notes) lines.push(`  note: ${note}`);
-  return lines;
+  return lines.map(sanitizeForTerminal);
 }
 
 function exitCode(overall: Verdict['overall']): number {
@@ -186,23 +238,33 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
     io.out(USAGE);
     return EXIT_GENUINE;
   }
+  if (args.version) {
+    io.out(`sealed-pdf-verify ${VERSION}`);
+    return EXIT_GENUINE;
+  }
   try {
     const options = buildOptions(args);
     const [target, extra] = args.positionals;
     if (extra !== undefined) throw new Error('expected at most one file argument');
+    const targetBytes = target === undefined ? null : new Uint8Array(readFileSync(target));
 
-    if (target !== undefined && /\.zip$/i.test(target) && args.proof === undefined) {
-      const result = await verifyEvidenceZip(new Uint8Array(readFileSync(target)), options);
+    // The file's own bytes decide what it is; an extension is only a hint.
+    if (targetBytes !== null && looksLikeZip(targetBytes)) {
+      if (args.proof !== undefined)
+        throw new Error('an evidence archive carries its own seals and does not take --proof');
+      const result = await verifyEvidenceZip(targetBytes, options);
       if (args.json) io.out(JSON.stringify(result, null, 2));
       else for (const line of formatEvidence(result)) io.out(line);
       return exitCode(result.overall);
     }
+    if (target !== undefined && /\.zip$/i.test(target))
+      throw new Error(`${target}: not a ZIP archive`);
 
     if (args.proof === undefined)
       throw new Error('--proof <proof.json> is required (or pass an evidence .zip)');
     const proof = readFileSync(args.proof, 'utf8');
-    const input: Parameters<typeof verifySealedPdf>[0] = { proof, options };
-    if (target !== undefined) input.pdf = new Uint8Array(readFileSync(target));
+    const input: VerifyInput = { proof, options };
+    if (targetBytes !== null) input.pdf = targetBytes;
     const verdict = await verifySealedPdf(input);
     if (args.json) io.out(JSON.stringify(verdict, null, 2));
     else for (const line of formatVerdict(verdict)) io.out(line);
