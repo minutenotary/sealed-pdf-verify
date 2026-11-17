@@ -10,7 +10,8 @@ SubjectPublicKeyInfo DER, 64 lowercase hex characters.
 
 Where to find the official fingerprint:
 
-- the issuer's verification page on [minutenotary.ca](https://minutenotary.ca),
+- the issuer's verification page,
+  [minutenotary.ca/verify](https://minutenotary.ca/verify) ("Official seal key"),
 - the `README.txt` inside an evidence archive from the issuer.
 
 Compute it yourself from a PEM public key:
@@ -19,7 +20,9 @@ Compute it yourself from a PEM public key:
 openssl ec -pubin -in key.pem -outform DER | openssl dgst -sha256
 ```
 
-Then pin it:
+`trust/issuers.json` in the repository already lists the official
+fingerprint (read from that page on 2026-11-17); check it against the page
+before you use it. To pin it yourself:
 
 ```json
 { "fingerprints": ["<64 hex>"] }
