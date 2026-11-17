@@ -74,9 +74,10 @@ have filled in yourself (the CLI refuses an empty one):
 npx sealed-pdf-verify document.pdf --proof document.proof.json --trust issuers.json
 ```
 
-`trust/issuers.json` in this repository is the empty template for that file;
-see [Confirming the key fingerprint](#confirming-the-key-fingerprint) for the
-fingerprint to put in it.
+`trust/issuers.json` in this repository holds the issuer's official
+fingerprint, as published on [minutenotary.ca/verify](https://minutenotary.ca/verify)
+on 2026-11-17. Compare it with that page before you rely on it; see
+[Confirming the key fingerprint](#confirming-the-key-fingerprint).
 
 An evidence ZIP (delivered by the issuer on request) verifies in one go:
 
@@ -119,8 +120,8 @@ A valid signature only proves that _some_ key signed the digest. To know it
 is the issuer's key, compare the fingerprint the verifier prints (`Key` line,
 or `facts.fingerprint` in JSON) with the fingerprint published out of band:
 
-- on the issuer's web site, [minutenotary.ca](https://minutenotary.ca)
-  (verification page), or
+- on the issuer's verification page,
+  [minutenotary.ca/verify](https://minutenotary.ca/verify) ("Official seal key"), or
 - printed in the `README.txt` of an evidence archive from the issuer.
 
 Then put it in a trust file and pass `--trust`:

@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+No change to the library, the CLI or the browser page.
+
+### Changed
+
+- `trust/issuers.json` lists the issuer's official key fingerprint, read from
+  its verification page (minutenotary.ca/verify) on 2026-11-17, instead of an
+  empty template. The README and the fingerprint guide point to that page.
+
 ## [0.1.1] - 2026-11-05
 
 No change to the library, the CLI or the browser page.
